@@ -1,0 +1,7 @@
+streamlit>=1.45
+pandas>=2.2
+numpy>=1.26
+matplotlib>=3.8
+openpyxl>=3.1
+supabase>=2.7
+postgrest>=0.16
