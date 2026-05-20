@@ -17,6 +17,8 @@
 # - Adds admin-only buttons to delete version history and clear the shared allocation table.
 # - Saves/restores all Excel workbook sheets as project tabs.
 # - Adds download buttons for map HTML and map data CSV.
+# - Restores admin-only buttons to delete version history and clear shared allocation table.
+# - Fixes Auto Deconflict Anchor so changing the anchor time repacks the schedule.
 
 import io
 import math
@@ -927,57 +929,100 @@ def placement_is_valid(candidate, item, placed, pad_sec, guard_mhz):
     return True
 
 def auto_deconflict_smart(df, max_shift_sec, pad_sec, anchor_sec, guard_mhz=0.0, allow_earlier=True, priority_mode="Power + Original Time"):
+    """
+    Time deconfliction that actually honors the Anchor field.
+
+    Previous behavior preferred the original start time first. That made the
+    sidebar Anchor look like it was not changing anything. This version packs
+    conflicting rows from the selected anchor forward, while still respecting
+    max_shift_sec and frequency guard band rules.
+    """
     req = {"StartTime", "EndTime", "StartF", "EndF", "PowerW"}
     if not req.issubset(df.columns):
         return df.copy()
+
     d = df.copy()
     d["OrigStartSec"] = d["StartTime"].apply(parse_time_one)
     d["OrigEndSec"] = d["EndTime"].apply(parse_time_one)
     d = d.loc[d["OrigStartSec"].notna() & d["OrigEndSec"].notna()].copy()
+
     if d.empty:
         return df.copy()
-    d["OrigEndSec"] = np.where(d["OrigEndSec"] < d["OrigStartSec"], d["OrigEndSec"] + 86400, d["OrigEndSec"])
+
+    d["OrigEndSec"] = np.where(
+        d["OrigEndSec"] < d["OrigStartSec"],
+        d["OrigEndSec"] + 86400,
+        d["OrigEndSec"],
+    )
     d["DurationSec"] = d["OrigEndSec"] - d["OrigStartSec"]
+
     if priority_mode == "Highest Power First":
         d = d.sort_values(["PowerW", "OrigStartSec"], ascending=[False, True])
     elif priority_mode == "Shortest Duration First":
         d = d.sort_values(["DurationSec", "OrigStartSec"], ascending=[True, True])
     else:
-        d = d.sort_values(["OrigStartSec", "PowerW"], ascending=[True, False])
+        d = d.sort_values(["PowerW", "OrigStartSec"], ascending=[False, True])
+
     placed, out_rows = [], []
-    horizon_end = max(24*3600, float(d["OrigEndSec"].max()) + max_shift_sec)
+    anchor_sec = float(anchor_sec)
+    horizon_end = max(24 * 3600, anchor_sec + float(max_shift_sec), float(d["OrigEndSec"].max()) + float(max_shift_sec))
+
     for _, row in d.iterrows():
         item = row.to_dict()
-        req_start = item["OrigStartSec"]
-        dur = item["DurationSec"]
+        req_start = float(item["OrigStartSec"])
+        dur = float(item["DurationSec"])
+
+        # If earlier moves are allowed, pack from the anchor.
+        # If earlier moves are not allowed, never place before the original requested time or anchor.
         earliest = anchor_sec if allow_earlier else max(anchor_sec, req_start)
-        latest = min(horizon_end - dur, req_start + max_shift_sec)
-        candidates = {req_start, max(earliest, req_start)}
-        if allow_earlier:
-            candidates.add(anchor_sec)
+        latest = min(horizon_end - dur, req_start + float(max_shift_sec))
+
+        # If the original row is before the selected anchor, allow it to move forward at least to the anchor.
+        if latest < earliest:
+            latest = earliest
+
+        candidates = set()
+
+        # Always try the anchor/earliest first so changing Anchor visibly changes the schedule.
+        candidates.add(earliest)
+
+        # Try just after any already-placed conflicting block.
         for p in placed:
             if freq_overlap(item["StartF"], item["EndF"], p["StartF"], p["EndF"], guard_mhz):
-                candidates.add(p["PlacedEndSec"] + pad_sec)
-                candidates.add(p["PlacedStartSec"] - pad_sec - dur)
-        # 5-minute backup scan to catch real gaps
+                candidates.add(float(p["PlacedEndSec"]) + float(pad_sec))
+                if allow_earlier:
+                    candidates.add(float(p["PlacedStartSec"]) - float(pad_sec) - dur)
+
+        # Backup scan. One-minute granularity gives better packing than five minutes.
         if latest >= earliest:
-            candidates.update(np.arange(earliest, latest + 1, 5*60))
-        candidates = sorted(float(c) for c in candidates if np.isfinite(c) and c >= earliest and c <= latest)
-        if req_start in candidates:
-            candidates = [req_start] + [c for c in candidates if abs(c-req_start) > 1e-6]
-        chosen, ok = req_start, False
+            candidates.update(np.arange(earliest, latest + 1, 60))
+
+        # Only legal finite candidates.
+        candidates = [
+            float(c)
+            for c in candidates
+            if np.isfinite(c) and c >= earliest and c <= latest
+        ]
+
+        # Sort from anchor/earliest forward. This is the key anchor fix.
+        candidates = sorted(candidates, key=lambda c: (abs(c - earliest), c))
+
+        chosen, ok = earliest, False
         for cand in candidates:
             if placement_is_valid(cand, item, placed, pad_sec, guard_mhz):
                 chosen, ok = cand, True
                 break
+
         item["PlacedStartSec"] = chosen
         item["PlacedEndSec"] = chosen + dur
         item["ShiftSec"] = chosen - req_start
         item["Placed"] = ok
         item["StartTimeDC"] = fmt_hhmm(chosen)
         item["EndTimeDC"] = fmt_hhmm(chosen + dur)
+
         placed.append(item)
         out_rows.append(item)
+
     out = pd.DataFrame(out_rows).sort_values(".row_id")
     keep = [".row_id", "PlacedStartSec", "PlacedEndSec", "ShiftSec", "Placed", "StartTimeDC", "EndTimeDC"]
     return df.merge(out[keep], on=".row_id", how="left")
@@ -1303,7 +1348,12 @@ with st.sidebar:
     tick_major = ticks_value(st.text_input("Major tick (MHz)", value="")); tick_minor = ticks_value(st.text_input("Minor grid (MHz)", value=""))
     st.divider(); st.header("Auto deconflict")
     auto_dc = st.checkbox("Auto deconflict by time", value=False)
-    dc_start = st.text_input("Anchor", value="6am")
+    dc_start = st.text_input(
+        "Anchor",
+        value=st.session_state.get("dc_anchor_time", "6am"),
+        key="dc_anchor_time",
+        help="Deconfliction will pack moved rows starting at this time. Examples: 4am, 0730, 13:00, 1:30pm.",
+    )
     dc_window = st.selectbox("Max shift window (hours)", [2,4,6,8,10,12,16,20,24], index=3)
     dc_pad_min = st.number_input("Min separation (minutes)", min_value=0.0, value=1.0, step=0.5)
     guard_mhz = st.number_input("Frequency guard band (MHz)", min_value=0.0, value=0.0, step=0.1)
@@ -1433,6 +1483,60 @@ if is_admin:
                     except Exception as e:
                         st.warning(f"User was disabled in app roles, but auth delete failed or is unavailable: {e}")
                         st.rerun()
+
+
+
+if is_admin:
+    with st.expander("Admin: Delete data", expanded=False):
+        st.warning("These actions affect the selected project only. They cannot be undone.")
+
+        col_a, col_b = st.columns(2)
+
+        with col_a:
+            st.markdown("#### Delete all version history")
+            st.caption("Deletes every saved snapshot for this project. Current workbook/table rows stay untouched.")
+            confirm_versions = st.checkbox(
+                "I understand: delete all version history",
+                key=f"confirm_delete_versions_{project_id}",
+            )
+            if st.button(
+                "Delete all version history",
+                type="primary",
+                use_container_width=True,
+                disabled=not confirm_versions,
+                key=f"btn_delete_versions_{project_id}",
+            ):
+                try:
+                    delete_all_versions(project_id)
+                    st.success("All version history for this project was deleted.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Could not delete version history: {e}")
+
+        with col_b:
+            st.markdown("#### Clear shared allocation table")
+            st.caption("Deletes current allocation rows and saved workbook tabs. Project, users, uploaded files, and versions remain.")
+            confirm_table = st.checkbox(
+                "I understand: clear shared allocation table",
+                key=f"confirm_clear_table_{project_id}",
+            )
+            if st.button(
+                "Clear shared allocation table",
+                type="primary",
+                use_container_width=True,
+                disabled=not confirm_table,
+                key=f"btn_clear_table_{project_id}",
+            ):
+                try:
+                    clear_shared_allocation_table(project_id, logged_in_user)
+                    st.session_state.pop("editor", None)
+                    st.session_state.pop("workbook_sheets", None)
+                    st.session_state.pop("active_sheet_name", None)
+                    st.session_state.pop("workbook_project_id", None)
+                    st.success("Shared allocation table and workbook tabs were cleared.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Could not clear shared allocation table: {e}")
 
 
 with st.expander("Import / replace table from file or pasted CSV", expanded=(len(current_df)==0)):
@@ -1649,8 +1753,19 @@ if bad_count:
 plot_df_conf = df_ready.copy()
 if auto_dc:
     anchor = parse_time_one(dc_start)
-    if pd.isna(anchor): st.error("Deconflict anchor is invalid. Use HH:MM or 12am/7am."); st.stop()
-    plot_df_conf = auto_deconflict_smart(df_ready, float(dc_window)*3600, float(dc_pad_min)*60, float(anchor), float(guard_mhz), allow_earlier, priority_mode)
+    if pd.isna(anchor):
+        st.error("Deconflict anchor is invalid. Use examples like 4am, 0730, 13:00, or 1:30pm.")
+        st.stop()
+    st.caption(f"Auto-deconflict anchor applied: {fmt_hhmm(float(anchor))}")
+    plot_df_conf = auto_deconflict_smart(
+        df_ready,
+        float(dc_window) * 3600,
+        float(dc_pad_min) * 60,
+        float(anchor),
+        float(guard_mhz),
+        allow_earlier,
+        priority_mode,
+    )
     if "StartTimeDC" in plot_df_conf.columns:
         plot_df_conf["StartTimeOrig"] = plot_df_conf["StartTime"]; plot_df_conf["EndTimeOrig"] = plot_df_conf["EndTime"]
         plot_df_conf["StartTime"] = np.where(plot_df_conf["StartTimeDC"].notna(), plot_df_conf["StartTimeDC"], plot_df_conf["StartTime"])
