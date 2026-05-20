@@ -1025,12 +1025,15 @@ def build_map_deck(df, group_field, palette, radius_units="miles", show_coverage
         )
     )
 
+    # Use free CARTO basemap styles so the map works without a Mapbox/Google/Bing token.
+    # The previous Mapbox styles can render blank on Streamlit Cloud if no Mapbox token is configured.
     if map_style == "dark":
-        style = "mapbox://styles/mapbox/dark-v10"
+        style = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
     elif map_style == "satellite":
-        style = "mapbox://styles/mapbox/satellite-streets-v11"
+        # Free no-token fallback. True satellite requires a provider token, such as Mapbox, Google, Bing, or Esri.
+        style = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
     else:
-        style = "mapbox://styles/mapbox/light-v9"
+        style = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
 
     deck = pdk.Deck(
         layers=layers,
@@ -1522,7 +1525,7 @@ with tab4:
 
 with tab5:
     st.markdown("#### Map View")
-    st.caption("Uses decimal-degree Latitude and Longitude columns. Coverage Radius draws circles using the selected units.")
+    st.caption("Uses decimal-degree Latitude and Longitude columns. Coverage Radius draws circles using the selected units. Basemap uses free CARTO tiles; no Mapbox/Google token required.")
     deck, map_df = build_map_deck(
         df_ready,
         map_group_field,
