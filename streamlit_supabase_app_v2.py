@@ -1564,5 +1564,3 @@ with tab6:
         moves = moves.loc[abs(moves["ShiftMin"]) > .001]
         cols = [c for c in ["Equipment", "Tech", "Unit", "StartF", "EndF", "StartTimeOrig", "EndTimeOrig", "StartTimeDC", "EndTimeDC", "ShiftMin", "Placed"] if c in moves.columns]
         st.dataframe(moves[cols] if not moves.empty else pd.DataFrame({"Message": ["No rows were moved."]}), use_container_width=True)
-streamlit_supabase_app_v10_full_working_auth_admin_map.py
-Displaying streamlit_supabase_app_v10_full_working_auth_admin_map.py.
