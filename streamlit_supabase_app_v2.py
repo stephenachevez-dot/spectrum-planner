@@ -1,3 +1,30 @@
+None selected
+
+Skip to content
+Using Gmail with screen readers
+Conversations
+me
+(no subject)
+ 
+Attachment:
+supabase_auth_roles_setup_v10.sql
+2:42 PM
+Amenify Team
+🧺 Here's $75 Off to fold your laundry or do the dishes
+ - Use Amenify Credits ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏ ͏
+ 
+2:25 PM
+Samuel Correa1
+2
+Welcome to Lenovo Pro – Let's Get Started!
+ - Hey Stephen,﻿ Welcome to Lenovo Pro. We're glad to have you on board. Lenovo Pro is built to make purchasing simple while giving your business access to expert support when you need it. Beyond
+Attachment:
+image.png
+1:29 PM
+80% of 15 GB used
+Terms · Privacy · Program Policies
+Last account activity: 2 minutes ago
+Details
 # streamlit_supabase_app_v2.py
 # Spectrum Planner — Streamlit + Supabase
 # JSON-backed, polished, and safer deconfliction.
@@ -67,24 +94,100 @@ sb_admin = get_supabase_admin()
 APP_COLUMNS = [
     "Start Time", "End Time", "Equipment", "Center Frequency (MHz)",
     "Start Frequency (MHz)", "End Frequency (MHz)", "Bandwidth (MHz)",
-    "Power (W)", "Power (dBm)", "Tech", "Unit", "Notes"
+    "Power (W)", "Power (dBm)", "Tech", "Unit", "Notes",
+    "Latitude", "Longitude", "Location",
+    "Antenna Height", "Coverage Radius", "Site Name",
 ]
 
 STANDARD_RENAME = {
-    "StartTime":"Start Time", "EndTime":"End Time", "Start Time":"Start Time", "End Time":"End Time",
-    "Equipment":"Equipment", "Tech":"Tech", "Unit":"Unit", "Notes":"Notes",
-    "CenterF":"Center Frequency (MHz)", "Center Frequency":"Center Frequency (MHz)", "Center Frequency (MHz)":"Center Frequency (MHz)",
-    "StartF":"Start Frequency (MHz)", "Start Frequency":"Start Frequency (MHz)", "Start Frequency (MHz)":"Start Frequency (MHz)",
-    "EndF":"End Frequency (MHz)", "End Frequency":"End Frequency (MHz)", "End Frequency (MHz)":"End Frequency (MHz)",
-    "BW":"Bandwidth (MHz)", "Bandwidth":"Bandwidth (MHz)", "Bandwidth (MHz)":"Bandwidth (MHz)",
-    "PowerW":"Power (W)", "Power (W)":"Power (W)", "PowerdBm":"Power (dBm)", "Power (dBm)":"Power (dBm)"
+    "StartTime": "Start Time",
+    "EndTime": "End Time",
+    "Start Time": "Start Time",
+    "End Time": "End Time",
+
+    "Equipment": "Equipment",
+    "Equip": "Equipment",
+    "Tech": "Tech",
+    "Unit": "Unit",
+    "Notes": "Notes",
+
+    "CenterF": "Center Frequency (MHz)",
+    "Center Frequency": "Center Frequency (MHz)",
+    "Center Frequency (MHz)": "Center Frequency (MHz)",
+    "Center Freq": "Center Frequency (MHz)",
+    "Center Freq (MHz)": "Center Frequency (MHz)",
+
+    "StartF": "Start Frequency (MHz)",
+    "Start Frequency": "Start Frequency (MHz)",
+    "Start Frequency (MHz)": "Start Frequency (MHz)",
+    "Start Freq": "Start Frequency (MHz)",
+    "Start Freq (MHz)": "Start Frequency (MHz)",
+
+    "EndF": "End Frequency (MHz)",
+    "End Frequency": "End Frequency (MHz)",
+    "End Frequency (MHz)": "End Frequency (MHz)",
+    "End Freq": "End Frequency (MHz)",
+    "End Freq (MHz)": "End Frequency (MHz)",
+
+    "BW": "Bandwidth (MHz)",
+    "Bandwidth": "Bandwidth (MHz)",
+    "Bandwidth (MHz)": "Bandwidth (MHz)",
+
+    "PowerW": "Power (W)",
+    "Power (W)": "Power (W)",
+    "PowerdBm": "Power (dBm)",
+    "Power (dBm)": "Power (dBm)",
+
+    "Latitude": "Latitude",
+    "Lat": "Latitude",
+    "LAT": "Latitude",
+    "latitude": "Latitude",
+
+    "Longitude": "Longitude",
+    "Long": "Longitude",
+    "Lon": "Longitude",
+    "Lng": "Longitude",
+    "LON": "Longitude",
+    "longitude": "Longitude",
+
+    "Location": "Location",
+    "location": "Location",
+
+    "Antenna Height": "Antenna Height",
+    "AntennaHeight": "Antenna Height",
+    "Antenna Height (ft)": "Antenna Height",
+    "Antenna Height (m)": "Antenna Height",
+
+    "Coverage Radius": "Coverage Radius",
+    "CoverageRadius": "Coverage Radius",
+    "Coverage Radius (mi)": "Coverage Radius",
+    "Coverage Radius (km)": "Coverage Radius",
+    "Coverage Radius (NM)": "Coverage Radius",
+
+    "Site Name": "Site Name",
+    "SiteName": "Site Name",
+    "Site": "Site Name",
 }
 
 INTERNAL_RENAME = {
-    "Start Time":"StartTime", "End Time":"EndTime", "Equipment":"Equipment",
-    "Center Frequency (MHz)":"CenterF", "Start Frequency (MHz)":"StartF", "End Frequency (MHz)":"EndF",
-    "Bandwidth (MHz)":"BW", "Power (W)":"PowerW", "Power (dBm)":"PowerdBm",
-    "Tech":"Tech", "Unit":"Unit", "Notes":"Notes"
+    "Start Time": "StartTime",
+    "End Time": "EndTime",
+    "Equipment": "Equipment",
+    "Center Frequency (MHz)": "CenterF",
+    "Start Frequency (MHz)": "StartF",
+    "End Frequency (MHz)": "EndF",
+    "Bandwidth (MHz)": "BW",
+    "Power (W)": "PowerW",
+    "Power (dBm)": "PowerdBm",
+    "Tech": "Tech",
+    "Unit": "Unit",
+    "Notes": "Notes",
+    "Latitude": "Latitude",
+    "Longitude": "Longitude",
+    "Location": "Location",
+    "Antenna Height": "AntennaHeight",
+    "Coverage Radius": "CoverageRadius",
+    "Site Name": "SiteName",
 }
 
 def now_iso():
@@ -1488,3 +1591,5 @@ with tab6:
         moves = moves.loc[abs(moves["ShiftMin"]) > .001]
         cols = [c for c in ["Equipment", "Tech", "Unit", "StartF", "EndF", "StartTimeOrig", "EndTimeOrig", "StartTimeDC", "EndTimeDC", "ShiftMin", "Placed"] if c in moves.columns]
         st.dataframe(moves[cols] if not moves.empty else pd.DataFrame({"Message": ["No rows were moved."]}), use_container_width=True)
+streamlit_supabase_app_v10_full_working_auth_admin_map.py
+Displaying streamlit_supabase_app_v10_full_working_auth_admin_map.py.
