@@ -19,6 +19,8 @@
 # - Adds download buttons for map HTML and map data CSV.
 # - Restores admin-only buttons to delete version history and clear shared allocation table.
 # - Fixes Auto Deconflict Anchor so changing the anchor time repacks the schedule.
+# - Shows workbook-tab persistence status and saves all tabs permanently to Supabase.
+# - Fixes NaN/Inf JSON errors when saving workbook sheets.
 
 import io
 import math
@@ -211,13 +213,27 @@ def json_safe_value(value):
 
 def json_safe_df(df):
     """Return a copy of df containing only JSON-safe scalar values."""
-    safe = df.copy()
-    safe = safe.replace({np.nan: None, pd.NaT: None})
+    safe = df.copy().astype("object")
+    safe = safe.where(pd.notnull(safe), None)
+    safe = safe.replace({np.nan: None, np.inf: None, -np.inf: None, pd.NaT: None})
 
     for col in safe.columns:
-        safe[col] = safe[col].map(json_safe_value)
+        safe[col] = safe[col].map(json_safe_value).astype("object")
 
+    safe = safe.where(pd.notnull(safe), None)
     return safe
+
+
+def json_safe_records(df):
+    """Return list-of-dicts guaranteed to contain no NaN/Inf values."""
+    safe = json_safe_df(df)
+    records = []
+    for row in safe.to_dict(orient="records"):
+        clean_row = {}
+        for key, value in row.items():
+            clean_row[str(key)] = json_safe_value(value)
+        records.append(clean_row)
+    return records
 
 def obj_get(obj, key, default=None):
     """Read from Supabase response objects or dicts."""
@@ -698,12 +714,12 @@ def save_project_sheets(project_id, sheets_dict, user):
     order_no = 0
     for sheet_name, df_sheet in sheets_dict.items():
         order_no += 1
-        clean = json_safe_df(normalize_uploaded_df(df_sheet))
+        clean = normalize_uploaded_df(df_sheet)
         payloads.append({
             "project_id": project_id,
             "sheet_name": str(sheet_name),
             "sheet_order": order_no,
-            "sheet_data": clean.to_dict(orient="records"),
+            "sheet_data": json_safe_records(clean),
             "uploaded_by": user,
             "updated_at": now_iso(),
         })
@@ -726,7 +742,8 @@ def load_project_sheets(project_id):
             .data
             or []
         )
-    except Exception:
+    except Exception as e:
+        st.warning(f"Workbook tabs could not be loaded from Supabase. Run the v17 SQL setup if you have not already. Details: {e}")
         return {}
 
     sheets = {}
@@ -805,10 +822,11 @@ def get_project_rows(project_id):
 def replace_project_rows(project_id, df, user):
     sb.table("allocation_rows").delete().eq("project_id", project_id).execute()
 
-    clean = json_safe_df(normalize_uploaded_df(df))
+    clean = normalize_uploaded_df(df).reset_index(drop=True)
+    safe_rows = json_safe_records(clean)
     payloads = []
-    for i, row in clean.reset_index(drop=True).iterrows():
-        row_data = {c: json_safe_value(row.get(c, None)) for c in APP_COLUMNS}
+    for i, row_data in enumerate(safe_rows):
+        row_data = {c: json_safe_value(row_data.get(c, None)) for c in APP_COLUMNS}
         payloads.append({
             "project_id": project_id,
             "row_order": int(i),
@@ -828,8 +846,8 @@ def next_version_no(project_id):
     return 1 if not res.data else int(res.data[0]["version_no"]) + 1
 
 def save_version(project_id, df, user, note):
-    clean = json_safe_df(normalize_uploaded_df(df))
-    snap = clean.to_dict(orient="records")
+    clean = normalize_uploaded_df(df)
+    snap = json_safe_records(clean)
     vno = next_version_no(project_id)
 
     sb.table("allocation_versions").insert({
@@ -1396,6 +1414,15 @@ st.session_state.setdefault("pending_upload_sheets_dict", None)
 st.session_state.setdefault("pending_upload_sheet", None)
 st.session_state.setdefault("pending_upload_name", None)
 st.session_state.setdefault("pending_upload_bytes", None)
+
+# Workbook persistence status.
+try:
+    _saved_sheet_count = len(load_project_sheets(project_id))
+except Exception:
+    _saved_sheet_count = 0
+if _saved_sheet_count == 0 and len(st.session_state.get("workbook_sheets", {})) > 1:
+    st.warning("Workbook tabs are visible in this session, but they have not been confirmed saved in Supabase yet. Click Save shared changes, or run the v17 SQL setup if saving fails.")
+
 cols = st.columns(4)
 cols[0].metric("Rows", len(current_df)); cols[1].metric("Project", next((p["name"] for p in projects if p["id"] == project_id), "Selected")); cols[2].metric("User", user_name); cols[3].metric("Storage", "Supabase JSON")
 
@@ -1651,6 +1678,8 @@ st.subheader("Shared allocation workbook")
 
 workbook_sheets = st.session_state.get("workbook_sheets") or {"Working": normalize_uploaded_df(current_df)}
 sheet_names = list(workbook_sheets.keys())
+saved_sheet_count_now = len(load_project_sheets(project_id))
+st.caption(f"Workbook tabs in app: {len(sheet_names)} | Workbook tabs saved in Supabase: {saved_sheet_count_now}")
 
 if len(sheet_names) > 1:
     st.caption("Each Excel worksheet is preserved as a tab. Choose the active plotting sheet before saving.")
@@ -1684,12 +1713,15 @@ edited_df = normalize_uploaded_df(edited_sheets[active_sheet_name])
 s1, s2, s3, s4 = st.columns([1, 1, 1.2, 1.2])
 with s1:
     if st.button("💾 Save shared changes", type="primary", use_container_width=True, disabled=not can_edit):
-        # Save all workbook tabs and also save active sheet to main allocation table.
-        save_project_sheets(project_id, edited_sheets, user_name)
-        replace_project_rows(project_id, edited_df, user_name)
-        st.session_state["workbook_sheets"] = edited_sheets
-        st.success("Saved workbook tabs and active sheet.")
-        st.rerun()
+        try:
+            # Save all workbook tabs and also save active sheet to main allocation table.
+            saved_tabs = save_project_sheets(project_id, edited_sheets, user_name)
+            replace_project_rows(project_id, edited_df, user_name)
+            st.session_state["workbook_sheets"] = edited_sheets
+            st.success(f"Saved active sheet and {saved_tabs} workbook tab(s) permanently.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Could not save workbook tabs. Make sure you ran the v17 SQL setup. Details: {e}")
 
 with s2:
     version_note = st.text_input("Version note", value="Manual save", label_visibility="collapsed")
