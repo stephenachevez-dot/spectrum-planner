@@ -14,6 +14,9 @@
 # - Adds Map View tab using Latitude/Longitude and optional coverage circles.
 # - Adds stronger thin black outlines to separate overlapping visual bands.
 # - Saves original uploaded CSV/XLSX files to Supabase Storage for download after logout/login.
+# - Adds admin-only buttons to delete version history and clear the shared allocation table.
+# - Saves/restores all Excel workbook sheets as project tabs.
+# - Adds download buttons for map HTML and map data CSV.
 
 import io
 import math
@@ -682,6 +685,98 @@ def download_original_file(storage_path):
     return sb.storage.from_(STORAGE_BUCKET).download(storage_path)
 
 
+def save_project_sheets(project_id, sheets_dict, user):
+    """Save every workbook sheet for the selected project."""
+    if not sheets_dict:
+        return 0
+
+    sb.table("project_sheets").delete().eq("project_id", project_id).execute()
+
+    payloads = []
+    order_no = 0
+    for sheet_name, df_sheet in sheets_dict.items():
+        order_no += 1
+        clean = json_safe_df(normalize_uploaded_df(df_sheet))
+        payloads.append({
+            "project_id": project_id,
+            "sheet_name": str(sheet_name),
+            "sheet_order": order_no,
+            "sheet_data": clean.to_dict(orient="records"),
+            "uploaded_by": user,
+            "updated_at": now_iso(),
+        })
+
+    if payloads:
+        sb.table("project_sheets").insert(payloads).execute()
+
+    return len(payloads)
+
+
+def load_project_sheets(project_id):
+    """Load saved workbook sheets for the selected project."""
+    try:
+        rows = (
+            sb.table("project_sheets")
+            .select("*")
+            .eq("project_id", project_id)
+            .order("sheet_order")
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return {}
+
+    sheets = {}
+    for row in rows:
+        name = row.get("sheet_name", "Sheet")
+        data = row.get("sheet_data", []) or []
+        try:
+            sheets[name] = normalize_uploaded_df(pd.DataFrame(data))
+        except Exception:
+            sheets[name] = pd.DataFrame(data)
+
+    return sheets
+
+
+def read_uploaded_workbook(uploaded, selected_sheet=None):
+    """Read CSV/XLS/XLSX and return sheets dict, active sheet, file bytes."""
+    file_bytes = uploaded.getvalue()
+    ext = Path(uploaded.name).suffix.lower()
+
+    if ext == ".csv":
+        df = pd.read_csv(io.BytesIO(file_bytes))
+        return {"CSV": normalize_uploaded_df(df)}, "CSV", file_bytes
+
+    excel = pd.ExcelFile(io.BytesIO(file_bytes))
+    sheets = {}
+    for sheet_name in excel.sheet_names:
+        sheets[sheet_name] = normalize_uploaded_df(pd.read_excel(excel, sheet_name=sheet_name))
+
+    active = selected_sheet if selected_sheet in sheets else excel.sheet_names[0]
+    return sheets, active, file_bytes
+
+
+def workbook_to_xlsx_bytes(sheets_dict):
+    """Create a downloadable XLSX from saved workbook sheets."""
+    bio = io.BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+        for sheet_name, df_sheet in sheets_dict.items():
+            safe_name = str(sheet_name)[:31] or "Sheet"
+            df_sheet.to_excel(writer, sheet_name=safe_name, index=False)
+    bio.seek(0)
+    return bio.getvalue()
+
+
+def deck_to_html_bytes(deck):
+    """Create a downloadable standalone HTML map."""
+    try:
+        html = deck.to_html(as_string=True, notebook_display=False)
+    except TypeError:
+        html = deck.to_html(as_string=True)
+    return html.encode("utf-8")
+
+
 def list_projects():
     return sb.table("projects").select("*").order("updated_at", desc=True).execute().data or []
 
@@ -761,6 +856,24 @@ def list_versions(project_id):
 
 def load_version(version_id):
     return sb.table("allocation_versions").select("*").eq("id", version_id).single().execute().data
+
+def delete_all_versions(project_id):
+    """Delete all saved version snapshots for the selected project."""
+    return sb.table("allocation_versions").delete().eq("project_id", project_id).execute()
+
+
+def clear_shared_allocation_table(project_id, user):
+    """Delete all allocation rows for the selected project, leaving the project itself intact."""
+    sb.table("allocation_rows").delete().eq("project_id", project_id).execute()
+    sb.table("save_events").insert({
+        "project_id": project_id,
+        "event_type": "clear_allocation_rows",
+        "event_by": user,
+        "event_note": "Admin cleared shared allocation table",
+        "created_at": now_iso(),
+    }).execute()
+    sb.table("projects").update({"updated_at": now_iso()}).eq("id", project_id).execute()
+
 
 # ---------------- Conflict/deconfliction ----------------
 def freq_overlap(a0, a1, b0, b1, guard=0.0):
@@ -1214,7 +1327,23 @@ if not project_id:
     st.info("Create or select a project to begin."); st.stop()
 
 current_df = get_project_rows(project_id)
+
+# Restore saved workbook sheets. If there are no saved sheets yet, use the shared allocation table as a single Working sheet.
+saved_sheets = load_project_sheets(project_id)
+if saved_sheets:
+    if st.session_state.get("workbook_project_id") != project_id:
+        st.session_state["workbook_sheets"] = saved_sheets
+        st.session_state["active_sheet_name"] = list(saved_sheets.keys())[0]
+        st.session_state["workbook_project_id"] = project_id
+else:
+    if st.session_state.get("workbook_project_id") != project_id or "workbook_sheets" not in st.session_state:
+        st.session_state["workbook_sheets"] = {"Working": normalize_uploaded_df(current_df)}
+        st.session_state["active_sheet_name"] = "Working"
+        st.session_state["workbook_project_id"] = project_id
+
 st.session_state.setdefault("pending_upload_df", None)
+st.session_state.setdefault("pending_upload_sheets_dict", None)
+st.session_state.setdefault("pending_upload_sheet", None)
 st.session_state.setdefault("pending_upload_name", None)
 st.session_state.setdefault("pending_upload_bytes", None)
 cols = st.columns(4)
@@ -1317,21 +1446,11 @@ with st.expander("Import / replace table from file or pasted CSV", expanded=(len
                 file_bytes = uploaded.getvalue()
                 file_sig = f"{uploaded.name}-{len(file_bytes)}"
 
-                # Only re-read when the actual uploaded file changes.
                 if st.session_state.get("pending_upload_sig") != file_sig:
-                    suffix = Path(uploaded.name).suffix.lower()
-
-                    if suffix in [".xlsx", ".xls"]:
-                        xl = pd.ExcelFile(io.BytesIO(file_bytes))
-                        st.session_state["pending_upload_sheets"] = xl.sheet_names
-                        selected_sheet = st.session_state.get("pending_upload_sheet") or xl.sheet_names[0]
-                        raw_upload_df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=selected_sheet)
-                    else:
-                        st.session_state["pending_upload_sheets"] = []
-                        st.session_state["pending_upload_sheet"] = None
-                        raw_upload_df = pd.read_csv(io.BytesIO(file_bytes))
-
-                    st.session_state["pending_upload_df"] = normalize_uploaded_df(raw_upload_df)
+                    sheets_dict, active_sheet, file_bytes = read_uploaded_workbook(uploaded)
+                    st.session_state["pending_upload_sheets_dict"] = sheets_dict
+                    st.session_state["pending_upload_sheet"] = active_sheet
+                    st.session_state["pending_upload_df"] = sheets_dict[active_sheet]
                     st.session_state["pending_upload_name"] = uploaded.name
                     st.session_state["pending_upload_bytes"] = file_bytes
                     st.session_state["pending_upload_sig"] = file_sig
@@ -1339,36 +1458,44 @@ with st.expander("Import / replace table from file or pasted CSV", expanded=(len
             except Exception as e:
                 st.error(f"Upload failed: {e}")
 
-        # Keep the uploaded preview even after Streamlit reruns.
-        if st.session_state.get("pending_upload_df") is not None:
-            sheets = st.session_state.get("pending_upload_sheets") or []
+        if st.session_state.get("pending_upload_sheets_dict") is not None:
+            sheets_dict = st.session_state["pending_upload_sheets_dict"]
+            sheet_names = list(sheets_dict.keys())
 
-            if sheets:
-                default_sheet = st.session_state.get("pending_upload_sheet") or sheets[0]
+            if len(sheet_names) > 1:
                 current_sheet = st.selectbox(
-                    "Sheet",
-                    sheets,
-                    index=sheets.index(default_sheet) if default_sheet in sheets else 0,
-                    key="sheet_select_persistent",
+                    "Workbook sheet preview",
+                    sheet_names,
+                    index=sheet_names.index(st.session_state.get("pending_upload_sheet", sheet_names[0]))
+                    if st.session_state.get("pending_upload_sheet", sheet_names[0]) in sheet_names else 0,
+                    key="pending_upload_sheet_select",
                 )
+                st.session_state["pending_upload_sheet"] = current_sheet
+                st.session_state["pending_upload_df"] = sheets_dict[current_sheet]
+            else:
+                current_sheet = sheet_names[0]
 
-                if current_sheet != st.session_state.get("pending_upload_sheet"):
-                    st.session_state["pending_upload_sheet"] = current_sheet
-                    if uploaded is not None:
-                        file_bytes = uploaded.getvalue()
-                        raw_upload_df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=current_sheet)
-                        st.session_state["pending_upload_df"] = normalize_uploaded_df(raw_upload_df)
-
-            st.caption(f"Pending upload: {st.session_state.get('pending_upload_name', 'uploaded file')}")
+            st.caption(f"Pending upload: {st.session_state.get('pending_upload_name', 'uploaded file')} — {len(sheet_names)} sheet(s)")
             st.dataframe(st.session_state["pending_upload_df"].head(20), use_container_width=True)
 
             b1, b2 = st.columns(2)
             with b1:
-                if st.button("Replace with uploaded data", type="primary", use_container_width=True, disabled=not can_edit):
-                    tmp = st.session_state["pending_upload_df"].copy()
-                    replace_project_rows(project_id, tmp, user_name)
-                    save_version(project_id, tmp, user_name, "Imported file")
+                if st.button("Replace with uploaded workbook/data", type="primary", use_container_width=True, disabled=not can_edit):
+                    sheets_dict = st.session_state["pending_upload_sheets_dict"]
+                    active_sheet = st.session_state.get("pending_upload_sheet") or list(sheets_dict.keys())[0]
+                    tmp = normalize_uploaded_df(sheets_dict[active_sheet].copy())
 
+                    # Save active sheet to the main shared allocation table for plots/deconfliction.
+                    replace_project_rows(project_id, tmp, user_name)
+                    save_version(project_id, tmp, user_name, f"Imported file — active sheet: {active_sheet}")
+
+                    # Save every sheet so workbook tabs survive logout/login.
+                    try:
+                        save_project_sheets(project_id, sheets_dict, user_name)
+                    except Exception as e:
+                        st.warning(f"Main table was saved, but workbook sheets could not be saved: {e}")
+
+                    # Save original file.
                     try:
                         upload_original_file(
                             project_id,
@@ -1379,19 +1506,22 @@ with st.expander("Import / replace table from file or pasted CSV", expanded=(len
                     except Exception as e:
                         st.warning(f"Rows were saved, but the original file could not be saved to Storage: {e}")
 
+                    st.session_state["workbook_sheets"] = sheets_dict
+                    st.session_state["active_sheet_name"] = active_sheet
                     st.session_state["pending_upload_df"] = None
+                    st.session_state["pending_upload_sheets_dict"] = None
                     st.session_state["pending_upload_name"] = None
                     st.session_state["pending_upload_bytes"] = None
                     st.session_state["pending_upload_sig"] = None
-                    st.success("Uploaded data saved.")
+                    st.success("Uploaded workbook/data saved.")
                     st.rerun()
             with b2:
                 if st.button("Clear pending upload", use_container_width=True):
                     st.session_state["pending_upload_df"] = None
+                    st.session_state["pending_upload_sheets_dict"] = None
                     st.session_state["pending_upload_name"] = None
                     st.session_state["pending_upload_bytes"] = None
                     st.session_state["pending_upload_sig"] = None
-                    st.session_state["pending_upload_sheets"] = []
                     st.session_state["pending_upload_sheet"] = None
                     st.rerun()
 
@@ -1404,61 +1534,95 @@ with st.expander("Import / replace table from file or pasted CSV", expanded=(len
                 if st.button("Replace with pasted CSV", type="primary", disabled=not can_edit):
                     replace_project_rows(project_id, tmp, user_name)
                     save_version(project_id, tmp, user_name, "Pasted CSV")
-                    st.success("Pasted data saved.")
+                    save_project_sheets(project_id, {"CSV": tmp}, user_name)
+                    st.session_state["workbook_sheets"] = {"CSV": tmp}
+                    st.session_state["active_sheet_name"] = "CSV"
+                    st.success("Pasted CSV saved.")
                     st.rerun()
             except Exception as e:
                 st.error(f"Could not parse pasted CSV: {e}")
 
 
-with st.expander("Original uploaded files / download history", expanded=False):
-    file_rows = list_project_files(project_id)
+st.subheader("Shared allocation workbook")
 
-    if not file_rows:
-        st.info("No original files have been saved for this project yet. Upload a CSV/XLSX and click Replace with uploaded data.")
-    else:
-        file_display = pd.DataFrame(file_rows)
-        show_cols = [c for c in ["file_name", "uploaded_by", "uploaded_at", "storage_path"] if c in file_display.columns]
-        st.dataframe(file_display[show_cols], use_container_width=True)
+workbook_sheets = st.session_state.get("workbook_sheets") or {"Working": normalize_uploaded_df(current_df)}
+sheet_names = list(workbook_sheets.keys())
 
-        st.markdown("#### Download original file")
-        choices = [
-            f"{r.get('uploaded_at', '')} — {r.get('file_name', '')}"
-            for r in file_rows
-        ]
-        selected_file_label = st.selectbox("Saved files", choices, index=0)
-        selected_file = file_rows[choices.index(selected_file_label)]
+if len(sheet_names) > 1:
+    st.caption("Each Excel worksheet is preserved as a tab. Choose the active plotting sheet before saving.")
+else:
+    st.caption("Single-sheet project. Upload an XLSX with multiple sheets to preserve workbook tabs.")
 
-        try:
-            file_bytes = download_original_file(selected_file["storage_path"])
-            st.download_button(
-                "Download selected original file",
-                data=file_bytes,
-                file_name=selected_file.get("file_name", "uploaded_file"),
-                mime=guess_content_type(selected_file.get("file_name", "uploaded_file")),
-                use_container_width=True,
-            )
-        except Exception as e:
-            st.warning(f"Could not download this file. Check the Storage bucket/policies. Details: {e}")
+active_sheet_name = st.selectbox(
+    "Active sheet for plots/deconfliction",
+    sheet_names,
+    index=sheet_names.index(st.session_state.get("active_sheet_name", sheet_names[0]))
+    if st.session_state.get("active_sheet_name", sheet_names[0]) in sheet_names else 0,
+    key="active_sheet_selector",
+)
+st.session_state["active_sheet_name"] = active_sheet_name
 
+sheet_tabs = st.tabs(sheet_names)
+edited_sheets = {}
+for i, sheet_name in enumerate(sheet_names):
+    with sheet_tabs[i]:
+        edited_sheets[sheet_name] = st.data_editor(
+            workbook_sheets[sheet_name],
+            use_container_width=True,
+            height=330,
+            num_rows="dynamic",
+            key=f"sheet_editor_{project_id}_{sheet_name}",
+            disabled=not can_edit,
+        )
 
-st.subheader("Shared allocation table")
-edited_df = st.data_editor(current_df, use_container_width=True, height=330, num_rows="dynamic", key="editor")
-s1, s2, s3 = st.columns([1,1,1.6])
+edited_df = normalize_uploaded_df(edited_sheets[active_sheet_name])
+
+s1, s2, s3, s4 = st.columns([1, 1, 1.2, 1.2])
 with s1:
     if st.button("💾 Save shared changes", type="primary", use_container_width=True, disabled=not can_edit):
-        replace_project_rows(project_id, edited_df, user_name); st.success("Saved."); st.rerun()
-with s2: version_note = st.text_input("Version note", value="Manual save", label_visibility="collapsed")
+        # Save all workbook tabs and also save active sheet to main allocation table.
+        save_project_sheets(project_id, edited_sheets, user_name)
+        replace_project_rows(project_id, edited_df, user_name)
+        st.session_state["workbook_sheets"] = edited_sheets
+        st.success("Saved workbook tabs and active sheet.")
+        st.rerun()
+
+with s2:
+    version_note = st.text_input("Version note", value="Manual save", label_visibility="collapsed")
+
 with s3:
     if st.button("📌 Save version snapshot", use_container_width=True, disabled=not can_edit):
         st.success(f"Saved version {save_version(project_id, edited_df, user_name, version_note)}.")
+
+with s4:
+    try:
+        st.download_button(
+            "Download workbook XLSX",
+            data=workbook_to_xlsx_bytes(edited_sheets),
+            file_name="spectrum_planner_workbook.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+    except Exception as e:
+        st.warning(f"Workbook download unavailable: {e}")
+
 with st.expander("Version history / restore"):
     versions = list_versions(project_id)
-    if not versions: st.info("No versions saved yet.")
+    if not versions:
+        st.info("No versions saved yet.")
     else:
         st.dataframe(pd.DataFrame(versions)[["version_no", "saved_by", "save_note", "created_at"]], use_container_width=True)
         selected_v = st.selectbox("Restore version", versions, format_func=lambda v: f"v{v['version_no']} — {v.get('save_note') or ''} — {v.get('saved_by') or ''}")
         if st.button("Restore selected version", disabled=not can_edit):
-            v = load_version(selected_v["id"]); restored = normalize_uploaded_df(pd.DataFrame(v["snapshot"])); replace_project_rows(project_id, restored, user_name); save_version(project_id, restored, user_name, f"Restored v{selected_v['version_no']}"); st.success("Restored."); st.rerun()
+            v = load_version(selected_v["id"])
+            restored = normalize_uploaded_df(pd.DataFrame(v["snapshot"]))
+            replace_project_rows(project_id, restored, user_name)
+            save_project_sheets(project_id, {"Restored": restored}, user_name)
+            save_version(project_id, restored, user_name, f"Restored v{selected_v['version_no']}")
+            st.session_state["workbook_sheets"] = {"Restored": restored}
+            st.session_state["active_sheet_name"] = "Restored"
+            st.success("Restored.")
+            st.rerun()
 
 try:
     df_ready = prep_df(edited_df)
@@ -1547,6 +1711,25 @@ with tab5:
         )
     else:
         st.pydeck_chart(deck, use_container_width=True)
+
+        d1, d2 = st.columns(2)
+        with d1:
+            st.download_button(
+                "Download map HTML",
+                data=deck_to_html_bytes(deck),
+                file_name="spectrum_map.html",
+                mime="text/html",
+                use_container_width=True,
+            )
+        with d2:
+            st.download_button(
+                "Download map data CSV",
+                data=map_df.to_csv(index=False).encode("utf-8"),
+                file_name="spectrum_map_data.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
         st.markdown("#### Map rows")
         display_cols = [c for c in ["Equipment", "Tech", "Unit", "Latitude", "Longitude", "Location", "SiteName", "CoverageRadius", "AntennaHeight", "CenterF", "PowerW", "StartTime", "EndTime"] if c in map_df.columns]
         st.dataframe(map_df[display_cols], use_container_width=True)
