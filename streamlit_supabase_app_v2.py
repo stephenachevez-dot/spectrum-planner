@@ -37,6 +37,7 @@
 # - Adds Apply Smart Plan workflow to update workbook rows from selected recommendations.
 # - Adds row-level edit history, project dashboard, MGRS/USNG support, and smart import cleanup.
 # - Fixes mission template project_id NameError in sidebar.
+# - Fixes missing json import for project backup export.
 
 import io
 import math
@@ -1163,7 +1164,7 @@ def export_project_backup(project_id):
         except Exception:
             backup[key] = {} if key == "project" else []
 
-    return json.dumps(backup, indent=2, default=str).encode("utf-8")
+    return json.dumps(json_safe_value(backup), indent=2, default=str).encode("utf-8")
 
 
 def restore_project_backup(backup_bytes, new_project_name, user):
