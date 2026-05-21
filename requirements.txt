@@ -6,3 +6,4 @@ openpyxl>=3.1
 supabase>=2.7
 postgrest>=0.16
 pydeck>=0.9
+mgrs>=1.5.0
