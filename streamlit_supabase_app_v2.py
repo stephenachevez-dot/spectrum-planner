@@ -40,6 +40,7 @@
 # - Fixes missing json import for project backup export.
 # - Adds local json import fallback and recursive backup JSON sanitizer.
 # - Restores missing conflict_summary function for Conflict Tables tab.
+# - Restores missing conflict recommendation helper functions.
 
 import io
 import json
@@ -2428,6 +2429,78 @@ def apply_smart_plan_to_sheet(sheet_df, recommendation):
         return out, f"Applied time move to {changed_rows} row(s) for {move_group}: start after {new_start_txt}."
 
     raise ValueError(f"Unsupported recommendation type: {plan_type}")
+
+
+def conflict_recommendations(conflicts, label="Equipment"):
+    """Score conflicts and recommend practical deconfliction actions."""
+    if conflicts is None or conflicts.empty:
+        return pd.DataFrame({"Message": [f"No {label} conflicts."]})
+
+    d = conflicts.copy()
+    d["OverlapMHz"] = pd.to_numeric(d.get("FreqRight"), errors="coerce") - pd.to_numeric(d.get("FreqLeft"), errors="coerce")
+    d["OverlapMHz"] = d["OverlapMHz"].fillna(0).round(3)
+    d["OverlapMinRounded"] = pd.to_numeric(d.get("OverlapMin"), errors="coerce").fillna(0).round(1)
+    d["SeverityScore"] = (d["OverlapMHz"].clip(lower=0) * d["OverlapMinRounded"].clip(lower=0)).round(2)
+
+    def severity(row):
+        if row["OverlapMinRounded"] >= 60 or row["OverlapMHz"] >= 10 or row["SeverityScore"] >= 300:
+            return "High"
+        if row["OverlapMinRounded"] >= 15 or row["OverlapMHz"] >= 3 or row["SeverityScore"] >= 50:
+            return "Medium"
+        return "Low"
+
+    def action(row):
+        try:
+            delay_to = fmt_hhmm(float(row.get("EndOverlap", 0)) + 5 * 60)
+        except Exception:
+            delay_to = "later"
+        try:
+            shift_freq = round(float(row.get("FreqRight", 0)) + 0.025, 3)
+        except Exception:
+            shift_freq = ""
+
+        if row["OverlapMinRounded"] >= 30:
+            return f"Separate time window first: move {row.get('GroupB', '')} start to {delay_to}, or schedule outside {row.get('OverlapStartHM', '')}–{row.get('OverlapEndHM', '')}."
+        if row["OverlapMHz"] >= 5:
+            return f"Frequency separation recommended: move one system above {shift_freq} MHz or apply a guard band."
+        return f"Low conflict: verify mission priority; add guard band or shift {row.get('GroupB', '')} after {delay_to}."
+
+    out = pd.DataFrame({
+        "Type": label,
+        "Severity": d.apply(severity, axis=1),
+        "Score": d["SeverityScore"],
+        "Freq Start (MHz)": pd.to_numeric(d.get("FreqLeft"), errors="coerce").round(3),
+        "Freq End (MHz)": pd.to_numeric(d.get("FreqRight"), errors="coerce").round(3),
+        "Overlap MHz": d["OverlapMHz"],
+        "Window": d.get("OverlapStartHM", "").astype(str) + " – " + d.get("OverlapEndHM", "").astype(str),
+        "Overlap Min": d["OverlapMinRounded"],
+        "Group A": d.get("GroupA", ""),
+        "Group B": d.get("GroupB", ""),
+        "Recommended Action": d.apply(action, axis=1),
+    })
+
+    sev_order = {"High": 0, "Medium": 1, "Low": 2}
+    out["SeverityOrder"] = out["Severity"].map(sev_order).fillna(9)
+    return out.sort_values(["SeverityOrder", "Score"], ascending=[True, False]).drop(columns=["SeverityOrder"]).reset_index(drop=True)
+
+
+def combined_conflict_recommendations(conf_eq, conf_ut, unittech_label):
+    """Combine equipment and unit/tech conflict recommendations."""
+    frames = []
+
+    eq = conflict_recommendations(conf_eq, "Equipment")
+    if "Message" not in eq.columns:
+        frames.append(eq)
+
+    ut = conflict_recommendations(conf_ut, unittech_label)
+    if "Message" not in ut.columns:
+        frames.append(ut)
+
+    if not frames:
+        return pd.DataFrame({"Message": ["No conflicts requiring recommendations."]})
+
+    return pd.concat(frames, ignore_index=True)
+
 
 
 # ---------------- Plotting ----------------
