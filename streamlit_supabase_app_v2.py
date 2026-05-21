@@ -38,8 +38,10 @@
 # - Adds row-level edit history, project dashboard, MGRS/USNG support, and smart import cleanup.
 # - Fixes mission template project_id NameError in sidebar.
 # - Fixes missing json import for project backup export.
+# - Adds local json import fallback and recursive backup JSON sanitizer.
 
 import io
+import json
 import math
 import mimetypes
 import re
@@ -1127,8 +1129,37 @@ def path_lines_geojson(range_df, map_df, project_name="Spectrum Planner"):
 
 
 
+
+def backup_json_safe(obj):
+    """Recursively convert backup data to JSON-safe values."""
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return {str(k): backup_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [backup_json_safe(v) for v in obj]
+    if isinstance(obj, tuple):
+        return [backup_json_safe(v) for v in obj]
+    try:
+        if pd.isna(obj):
+            return None
+    except Exception:
+        pass
+    try:
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            if not np.isfinite(obj):
+                return None
+            return float(obj)
+    except Exception:
+        pass
+    return str(obj) if not isinstance(obj, (str, int, float, bool)) else obj
+
+
 def export_project_backup(project_id):
     """Export current project data, rows, versions, sheets, files metadata, members, and audit events."""
+    import json
     backup = {
         "backup_version": 1,
         "exported_at": now_iso(),
@@ -1164,11 +1195,12 @@ def export_project_backup(project_id):
         except Exception:
             backup[key] = {} if key == "project" else []
 
-    return json.dumps(json_safe_value(backup), indent=2, default=str).encode("utf-8")
+    return json.dumps(backup_json_safe(backup), indent=2).encode("utf-8")
 
 
 def restore_project_backup(backup_bytes, new_project_name, user):
     """Restore a backup into a new project. Original project id is not reused."""
+    import json
     if isinstance(backup_bytes, bytes):
         raw = backup_bytes.decode("utf-8")
     else:
