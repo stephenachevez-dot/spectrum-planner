@@ -39,6 +39,7 @@
 # - Fixes mission template project_id NameError in sidebar.
 # - Fixes missing json import for project backup export.
 # - Adds local json import fallback and recursive backup JSON sanitizer.
+# - Restores missing conflict_summary function for Conflict Tables tab.
 
 import io
 import json
@@ -2163,6 +2164,22 @@ def auto_deconflict_smart(df, max_shift_sec, pad_sec, anchor_sec, guard_mhz=0.0,
     out = pd.DataFrame(out_rows).sort_values(".row_id")
     keep = [".row_id", "PlacedStartSec", "PlacedEndSec", "ShiftSec", "Placed", "StartTimeDC", "EndTimeDC"]
     return df.merge(out[keep], on=".row_id", how="left")
+
+def conflict_summary(conflicts):
+    """Build a display table for conflict records."""
+    if conflicts is None or conflicts.empty:
+        return pd.DataFrame({"Message": ["No conflicts."]})
+
+    d = conflicts.copy()
+    return pd.DataFrame({
+        "Freq Start (MHz)": pd.to_numeric(d.get("FreqLeft"), errors="coerce").round(3),
+        "Freq End (MHz)": pd.to_numeric(d.get("FreqRight"), errors="coerce").round(3),
+        "Window": d.get("OverlapStartHM", "").astype(str) + " – " + d.get("OverlapEndHM", "").astype(str),
+        "Overlap (min)": pd.to_numeric(d.get("OverlapMin"), errors="coerce").round(1),
+        "Group A": d.get("GroupA", ""),
+        "Group B": d.get("GroupB", ""),
+    })
+
 
 def conflict_recommendations(conflicts, label="Equipment"):
     """Score conflicts and recommend practical deconfliction actions."""
