@@ -24,6 +24,10 @@
 # - Adds admin-only project deletion for old projects.
 # - Adds approval workflow, audit trail, and PDF briefing export.
 # - Fixes missing map HTML download helper.
+# - Adds project-level member permissions so admins control who can access each project.
+# - Adds KML export for map points/coverage and richer GIS-ready site popups.
+# - Adds live collaboration dashboard: online users, activity feed, and optional auto-refresh.
+# - Adds map heatmap/congestion layer for dense or overlapping spectrum activity.
 
 import io
 import math
@@ -32,6 +36,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import numpy as np
 import pandas as pd
@@ -650,6 +655,158 @@ def deck_to_html_bytes(deck):
     return html.encode("utf-8")
 
 
+def radius_to_meters(value, units="NM"):
+    """Convert a coverage radius value to meters."""
+    try:
+        cleaned = str(value).replace("NM", "").replace("nm", "").replace("mi", "").replace("km", "").strip()
+        radius = float(pd.to_numeric(cleaned, errors="coerce"))
+    except Exception:
+        radius = 0.0
+    if not np.isfinite(radius) or radius <= 0:
+        return 0.0
+    units = str(units or "NM").lower()
+    if units == "km":
+        return radius * 1000.0
+    if units in ["mi", "mile", "miles"]:
+        return radius * 1609.344
+    return radius * 1852.0
+
+
+def circle_polygon_kml(lon, lat, radius_m, points=72):
+    """Approximate a coverage circle as a KML polygon."""
+    if radius_m <= 0:
+        return ""
+    coords = []
+    earth_radius = 6378137.0
+    lat_rad = math.radians(lat)
+    lon_rad = math.radians(lon)
+    angular_distance = radius_m / earth_radius
+
+    for i in range(points + 1):
+        bearing = math.radians((360.0 / points) * i)
+        lat2 = math.asin(
+            math.sin(lat_rad) * math.cos(angular_distance)
+            + math.cos(lat_rad) * math.sin(angular_distance) * math.cos(bearing)
+        )
+        lon2 = lon_rad + math.atan2(
+            math.sin(bearing) * math.sin(angular_distance) * math.cos(lat_rad),
+            math.cos(angular_distance) - math.sin(lat_rad) * math.sin(lat2),
+        )
+        coords.append(f"{math.degrees(lon2):.8f},{math.degrees(lat2):.8f},0")
+    return " ".join(coords)
+
+
+def map_df_to_kml(map_df, project_name="Spectrum Planner", radius_units="NM", include_coverage=True):
+    """Export map rows as KML points and optional coverage polygons."""
+    if map_df is None or map_df.empty:
+        return b""
+
+    rows = map_df.copy()
+    rows["Latitude"] = pd.to_numeric(rows.get("Latitude"), errors="coerce")
+    rows["Longitude"] = pd.to_numeric(rows.get("Longitude"), errors="coerce")
+    rows = rows.dropna(subset=["Latitude", "Longitude"])
+
+    placemarks = []
+    for _, r in rows.iterrows():
+        equipment = escape(str(r.get("Equipment", "Site")))
+        site = escape(str(r.get("SiteName", "") or r.get("Location", "") or equipment))
+        location = escape(str(r.get("Location", "")))
+        unit = escape(str(r.get("Unit", "")))
+        tech = escape(str(r.get("Tech", "")))
+        center = escape(str(r.get("CenterF", "")))
+        power = escape(str(r.get("PowerW", "")))
+        start = escape(str(r.get("StartTime", "")))
+        end = escape(str(r.get("EndTime", "")))
+        lat = float(r["Latitude"])
+        lon = float(r["Longitude"])
+        radius_raw = r.get("CoverageRadius", 0)
+        radius_m = radius_to_meters(radius_raw, radius_units)
+
+        desc = (
+            f"Equipment: {equipment}<br/>"
+            f"Site: {site}<br/>"
+            f"Location: {location}<br/>"
+            f"Unit: {unit}<br/>"
+            f"Tech: {tech}<br/>"
+            f"Center Frequency: {center} MHz<br/>"
+            f"Power: {power} W<br/>"
+            f"Time: {start} - {end}<br/>"
+            f"Coverage Radius: {escape(str(radius_raw))} {escape(str(radius_units))}"
+        )
+
+        placemarks.append(f"""
+        <Placemark>
+          <name>{site}</name>
+          <description><![CDATA[{desc}]]></description>
+          <Point><coordinates>{lon:.8f},{lat:.8f},0</coordinates></Point>
+        </Placemark>
+        """)
+
+        if include_coverage and radius_m > 0:
+            polygon_coords = circle_polygon_kml(lon, lat, radius_m)
+            placemarks.append(f"""
+            <Placemark>
+              <name>{site} coverage</name>
+              <description><![CDATA[{desc}]]></description>
+              <Style>
+                <LineStyle><color>ff000000</color><width>1</width></LineStyle>
+                <PolyStyle><color>330000ff</color></PolyStyle>
+              </Style>
+              <Polygon>
+                <outerBoundaryIs>
+                  <LinearRing><coordinates>{polygon_coords}</coordinates></LinearRing>
+                </outerBoundaryIs>
+              </Polygon>
+            </Placemark>
+            """)
+
+    kml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>{escape(str(project_name))}</name>
+    {''.join(placemarks)}
+  </Document>
+</kml>
+"""
+    return kml.encode("utf-8")
+
+
+
+def map_congestion_summary(map_df):
+    """Create a simple congestion summary from map rows."""
+    if map_df is None or map_df.empty:
+        return pd.DataFrame({"Message": ["No map rows."]})
+
+    d = map_df.copy()
+    d["PowerW"] = pd.to_numeric(d.get("PowerW", 0), errors="coerce").fillna(0)
+    d["CoverageRadius"] = pd.to_numeric(d.get("CoverageRadius", 0), errors="coerce").fillna(0)
+    d["CenterF"] = pd.to_numeric(d.get("CenterF", np.nan), errors="coerce")
+
+    group_cols = [c for c in ["Location", "SiteName", "Unit"] if c in d.columns]
+    if not group_cols:
+        return pd.DataFrame({
+            "Sites": [len(d)],
+            "Total Power (W)": [round(d["PowerW"].sum(), 2)],
+            "Rows with Coordinates": [len(d)],
+        })
+
+    group_col = group_cols[0]
+    out = (
+        d.groupby(group_col, dropna=False)
+        .agg(
+            Rows=("Equipment", "count"),
+            TotalPowerW=("PowerW", "sum"),
+            AvgCoverage=("CoverageRadius", "mean"),
+            UniqueFreqs=("CenterF", lambda x: x.dropna().nunique()),
+        )
+        .reset_index()
+        .sort_values(["Rows", "TotalPowerW"], ascending=[False, False])
+    )
+    out["TotalPowerW"] = out["TotalPowerW"].round(2)
+    out["AvgCoverage"] = out["AvgCoverage"].round(2)
+    return out
+
+
 # ---------------- Supabase JSON-backed operations ----------------
 
 def safe_storage_filename(name):
@@ -889,8 +1046,178 @@ def briefing_pdf_bytes(project_name, status_info, df_ready, conflicts_eq, confli
     return bio.getvalue()
 
 
+def update_presence(project_id, user_id, email, role):
+    """Mark current user as online for this project."""
+    try:
+        sb.table("project_presence").upsert({
+            "project_id": project_id,
+            "user_id": user_id,
+            "email": email,
+            "role": role,
+            "last_seen": now_iso(),
+        }, on_conflict="project_id,user_id").execute()
+    except Exception:
+        pass
+
+
+def list_presence(project_id):
+    """List users seen recently on this project."""
+    try:
+        rows = (
+            sb.table("project_presence")
+            .select("*")
+            .eq("project_id", project_id)
+            .order("last_seen", desc=True)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return pd.DataFrame()
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    try:
+        last_seen = pd.to_datetime(df["last_seen"], utc=True)
+        now = pd.Timestamp.utcnow()
+        df["minutes_ago"] = ((now - last_seen).dt.total_seconds() / 60).round(1)
+        df["online"] = df["minutes_ago"] <= 5
+    except Exception:
+        df["minutes_ago"] = None
+        df["online"] = True
+
+    return df
+
+
+def list_recent_activity(project_id, limit=50):
+    """Merge audit events and save events into a simple activity feed."""
+    events = []
+
+    try:
+        audit_rows = (
+            sb.table("project_audit_events")
+            .select("*")
+            .eq("project_id", project_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+            .data
+            or []
+        )
+        for r in audit_rows:
+            events.append({
+                "time": r.get("created_at"),
+                "type": r.get("event_type"),
+                "user": r.get("event_by"),
+                "note": str(r.get("details", "")),
+            })
+    except Exception:
+        pass
+
+    try:
+        save_rows = (
+            sb.table("save_events")
+            .select("*")
+            .eq("project_id", project_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+            .data
+            or []
+        )
+        for r in save_rows:
+            events.append({
+                "time": r.get("created_at"),
+                "type": r.get("event_type"),
+                "user": r.get("event_by"),
+                "note": r.get("event_note"),
+            })
+    except Exception:
+        pass
+
+    if not events:
+        return pd.DataFrame(columns=["time", "type", "user", "note"])
+
+    df = pd.DataFrame(events)
+    df["time_dt"] = pd.to_datetime(df["time"], errors="coerce", utc=True)
+    df = df.sort_values("time_dt", ascending=False).drop(columns=["time_dt"])
+    return df.head(limit)
+
+
+def get_last_project_update(project_id):
+    """Return latest known project update timestamp and recent save/user info."""
+    try:
+        rows = sb.table("projects").select("updated_at,status,approved_by,approved_at").eq("id", project_id).limit(1).execute().data or []
+        return rows[0] if rows else {}
+    except Exception:
+        return {}
+
+
+def list_project_members(project_id):
+    try:
+        return (
+            sb.table("project_members")
+            .select("*")
+            .eq("project_id", project_id)
+            .order("email")
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return []
+
+
+def upsert_project_member(project_id, user_id, email, access_role="editor", added_by=""):
+    rec = {
+        "project_id": project_id,
+        "user_id": user_id,
+        "email": email or "",
+        "access_role": access_role,
+        "added_by": added_by,
+        "updated_at": now_iso(),
+    }
+    sb.table("project_members").upsert(rec, on_conflict="project_id,user_id").execute()
+    log_audit_event(project_id, "project_member_updated", added_by, {"email": email, "access_role": access_role})
+
+
+def remove_project_member(project_id, user_id, removed_by=""):
+    sb.table("project_members").delete().eq("project_id", project_id).eq("user_id", user_id).execute()
+    log_audit_event(project_id, "project_member_removed", removed_by, {"user_id": user_id})
+
+
+def user_has_project_access(project_id, user_id):
+    if is_admin:
+        return True
+    try:
+        rows = (
+            sb.table("project_members")
+            .select("user_id")
+            .eq("project_id", project_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        return bool(rows)
+    except Exception:
+        # If SQL has not been run yet, fail open so the app does not lock everyone out.
+        return True
+
+
 def list_projects():
-    return sb.table("projects").select("*").order("updated_at", desc=True).execute().data or []
+    all_projects = sb.table("projects").select("*").order("updated_at", desc=True).execute().data or []
+    if is_admin:
+        return all_projects
+
+    accessible = []
+    for project in all_projects:
+        if user_has_project_access(project.get("id"), current_user_id):
+            accessible.append(project)
+    return accessible
 
 def create_project(name, description):
     res = sb.table("projects").insert({
@@ -901,6 +1228,16 @@ def create_project(name, description):
     }).execute()
     proj = res.data[0]
     log_audit_event(proj["id"], "project_created", logged_in_user if "logged_in_user" in globals() else "", {"name": name})
+    try:
+        upsert_project_member(
+            proj["id"],
+            current_user_id if "current_user_id" in globals() else "",
+            logged_in_user if "logged_in_user" in globals() else "",
+            "owner",
+            logged_in_user if "logged_in_user" in globals() else "",
+        )
+    except Exception:
+        pass
     return proj
 
 def delete_project(project_id):
@@ -1273,7 +1610,7 @@ def prep_map_df(df, group_field):
     return m
 
 
-def build_map_deck(df, group_field, palette, radius_units="miles", show_coverage=True, map_style="light"):
+def build_map_deck(df, group_field, palette, radius_units="miles", show_coverage=True, map_style="light", show_heatmap=False, heatmap_weight_by="Power"):
     """Build an interactive map with black-outlined points and optional coverage circles."""
     m = prep_map_df(df, group_field)
     if m.empty:
@@ -1294,7 +1631,28 @@ def build_map_deck(df, group_field, palette, radius_units="miles", show_coverage
     m["fill_color"] = m["Group"].map(lambda g: color_to_rgba(palette.get(str(g), "#1f77b4"), 55))
     m["point_radius"] = (m["PowerW"].clip(lower=0.1) ** 0.5 * 55).clip(lower=55, upper=350)
 
+    if heatmap_weight_by == "Coverage Radius":
+        m["heat_weight"] = m["coverage_m"].replace(0, np.nan).fillna(1).clip(lower=1)
+    elif heatmap_weight_by == "Equal":
+        m["heat_weight"] = 1
+    else:
+        m["heat_weight"] = m["PowerW"].clip(lower=0.1).fillna(1)
+
     layers = []
+
+    if show_heatmap:
+        layers.append(
+            pdk.Layer(
+                "HeatmapLayer",
+                data=m,
+                get_position="[Longitude, Latitude]",
+                get_weight="heat_weight",
+                radius_pixels=90,
+                intensity=1,
+                threshold=0.05,
+                pickable=False,
+            )
+        )
 
     if show_coverage and (m["coverage_m"] > 0).any():
         layers.append(
@@ -1347,7 +1705,7 @@ def build_map_deck(df, group_field, palette, radius_units="miles", show_coverage
         ),
         map_style=style,
         tooltip={
-            "html": "<b>{Equipment}</b><br/>Group: {Group}<br/>Site: {SiteName}<br/>Location: {Location}<br/>Freq: {CenterF} MHz<br/>Power: {PowerW} W<br/>Time: {StartTime} - {EndTime}",
+            "html": "<b>{Equipment}</b><br/>Group: {Group}<br/>Site: {SiteName}<br/>Location: {Location}<br/>Unit: {Unit}<br/>Tech: {Tech}<br/>Freq: {CenterF} MHz<br/>Power: {PowerW} W<br/>Time: {StartTime} - {EndTime}<br/>Coverage: {CoverageRadius}",
             "style": {"backgroundColor": "white", "color": "black"},
         },
     )
@@ -1544,7 +1902,14 @@ with st.sidebar:
     map_group_by = st.selectbox("Map color by", ["Equipment", "Unit", "Tech"], index=0)
     radius_units = st.selectbox("Coverage radius units", ["miles", "kilometers", "nautical miles"], index=0)
     show_coverage = st.checkbox("Show coverage circles", value=True)
+    show_heatmap = st.checkbox("Show heatmap / congestion layer", value=False)
+    heatmap_weight_by = st.selectbox("Heatmap weight by", ["Power", "Coverage Radius", "Equal"], index=0)
     map_style_choice = st.selectbox("Map style", ["light", "dark", "satellite"], index=0)
+
+    st.divider()
+    st.header("Collaboration")
+    auto_refresh = st.checkbox("Auto-refresh project", value=False)
+    refresh_seconds = st.selectbox("Refresh interval", [10, 20, 30, 60], index=2)
 
 project_id = st.session_state.get("project_id")
 if not project_id:
@@ -1552,6 +1917,10 @@ if not project_id:
 
 current_project = next((p for p in projects if p["id"] == project_id), {})
 project_name = current_project.get("name", "Selected")
+if not user_has_project_access(project_id, current_user_id):
+    st.error("You do not have access to this project. Ask an administrator to add you as a project member.")
+    st.stop()
+
 status_info = get_project_status(project_id)
 project_status = status_info.get("status", "Draft")
 
@@ -1559,6 +1928,16 @@ project_status = status_info.get("status", "Draft")
 project_locked = project_status == "Approved" and not is_admin
 if project_locked:
     can_edit = False
+
+# Collaboration presence and optional auto-refresh.
+update_presence(project_id, current_user_id, logged_in_user, current_role)
+
+if auto_refresh:
+    st.caption(f"Auto-refresh enabled: every {refresh_seconds} seconds.")
+    st.markdown(
+        f"<meta http-equiv='refresh' content='{int(refresh_seconds)}'>",
+        unsafe_allow_html=True,
+    )
 
 current_df = get_project_rows(project_id)
 
@@ -1591,6 +1970,9 @@ if _saved_sheet_count == 0 and len(st.session_state.get("workbook_sheets", {})) 
 
 cols = st.columns(4)
 cols[0].metric("Rows", len(current_df)); cols[1].metric("Project", project_name); cols[2].metric("Status", project_status); cols[3].metric("User", user_name)
+if st.button("Refresh latest project data", use_container_width=True):
+    log_audit_event(project_id, "manual_refresh", logged_in_user, {})
+    st.rerun()
 
 
 with st.expander("Workflow: Approval status", expanded=False):
@@ -1627,6 +2009,34 @@ with st.expander("Workflow: Approval status", expanded=False):
             set_project_status(project_id, "Draft", logged_in_user, status_note)
             st.success("Project reopened as draft.")
             st.rerun()
+
+
+
+with st.expander("Live collaboration dashboard", expanded=False):
+    st.caption("Shows recently active users and recent project activity. Turn on Auto-refresh in the sidebar for live updates.")
+
+    c_presence, c_activity = st.columns(2)
+
+    with c_presence:
+        st.markdown("#### Online / recent users")
+        presence_df = list_presence(project_id)
+        if presence_df.empty:
+            st.info("No presence records yet.")
+        else:
+            display_cols = [c for c in ["online", "email", "role", "minutes_ago", "last_seen"] if c in presence_df.columns]
+            st.dataframe(presence_df[display_cols], use_container_width=True)
+
+    with c_activity:
+        st.markdown("#### Recent activity")
+        activity_df = list_recent_activity(project_id, limit=25)
+        if activity_df.empty:
+            st.info("No recent activity.")
+        else:
+            st.dataframe(activity_df, use_container_width=True)
+
+    last_update = get_last_project_update(project_id)
+    if last_update:
+        st.caption(f"Project last updated: {last_update.get('updated_at', 'unknown')}")
 
 
 
@@ -1714,6 +2124,65 @@ if is_admin:
                         st.warning(f"User was disabled in app roles, but auth delete failed or is unavailable: {e}")
                         st.rerun()
 
+
+
+
+if is_admin:
+    with st.expander("Admin: Project access", expanded=False):
+        st.caption("Control which users can open the selected project. Admins can always see every project.")
+
+        members = list_project_members(project_id)
+        if members:
+            st.dataframe(pd.DataFrame(members), use_container_width=True)
+        else:
+            st.info("No explicit members yet. Add users below.")
+
+        app_users = list_app_users()
+        if not app_users:
+            st.warning("No app users found yet.")
+        else:
+            user_options = [
+                f"{u.get('email','')} — {u.get('role','viewer')} — {u.get('user_id','')}"
+                for u in app_users
+                if u.get("role") != "disabled"
+            ]
+
+            if user_options:
+                selected_user_label = st.selectbox("User to add/update", user_options, key=f"member_user_{project_id}")
+                selected_user_obj = app_users[user_options.index(selected_user_label)]
+
+                access_role = st.selectbox(
+                    "Project access role",
+                    ["viewer", "editor", "owner"],
+                    index=1,
+                    key=f"member_access_{project_id}",
+                )
+
+                c_add, c_remove = st.columns(2)
+
+                with c_add:
+                    if st.button("Add / update project member", use_container_width=True, key=f"add_member_{project_id}"):
+                        try:
+                            upsert_project_member(
+                                project_id,
+                                selected_user_obj["user_id"],
+                                selected_user_obj.get("email", ""),
+                                access_role,
+                                logged_in_user,
+                            )
+                            st.success("Project access updated.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Could not update project access: {e}")
+
+                with c_remove:
+                    if st.button("Remove selected user from project", use_container_width=True, key=f"remove_member_{project_id}"):
+                        try:
+                            remove_project_member(project_id, selected_user_obj["user_id"], logged_in_user)
+                            st.success("Project member removed.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Could not remove project member: {e}")
 
 
 if is_admin:
@@ -2058,6 +2527,8 @@ with tab5:
         radius_units=radius_units,
         show_coverage=show_coverage,
         map_style=map_style_choice,
+        show_heatmap=show_heatmap,
+        heatmap_weight_by=heatmap_weight_by,
     )
 
     if deck is None:
@@ -2073,7 +2544,7 @@ with tab5:
     else:
         st.pydeck_chart(deck, use_container_width=True)
 
-        d1, d2 = st.columns(2)
+        d1, d2, d3 = st.columns(3)
         with d1:
             st.download_button(
                 "Download map HTML",
@@ -2090,10 +2561,22 @@ with tab5:
                 mime="text/csv",
                 use_container_width=True,
             )
+        with d3:
+            st.download_button(
+                "Download KML",
+                data=map_df_to_kml(map_df, project_name, radius_units, show_coverage),
+                file_name=f"{safe_storage_filename(project_name)}_map.kml",
+                mime="application/vnd.google-earth.kml+xml",
+                use_container_width=True,
+            )
 
         st.markdown("#### Map rows")
         display_cols = [c for c in ["Equipment", "Tech", "Unit", "Latitude", "Longitude", "Location", "SiteName", "CoverageRadius", "AntennaHeight", "CenterF", "PowerW", "StartTime", "EndTime"] if c in map_df.columns]
         st.dataframe(map_df[display_cols], use_container_width=True)
+
+        with st.expander("Map congestion summary", expanded=False):
+            st.caption("Ranks locations/sites by row count, power, coverage, and unique frequencies.")
+            st.dataframe(map_congestion_summary(map_df), use_container_width=True)
 
 with tab6:
     c1, c2 = st.columns(2)
