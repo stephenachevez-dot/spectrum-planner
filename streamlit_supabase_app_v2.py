@@ -36,6 +36,7 @@
 # - Adds smart frequency planning with alternate frequency/time-shift recommendations.
 # - Adds Apply Smart Plan workflow to update workbook rows from selected recommendations.
 # - Adds row-level edit history, project dashboard, MGRS/USNG support, and smart import cleanup.
+# - Fixes mission template project_id NameError in sidebar.
 
 import io
 import math
@@ -2726,12 +2727,13 @@ with st.sidebar:
             st.markdown("#### Save current project as template")
             template_name = st.text_input("Template name", key="template_save_name")
             template_desc = st.text_area("Template description", height=70, key="template_save_desc")
-            if st.button("Save current workbook as template", use_container_width=True, disabled=not project_id):
+            if st.button("Save current workbook as template", use_container_width=True, disabled=not st.session_state.get("project_id")):
                 try:
-                    sheets_for_template = st.session_state.get("workbook_sheets") or load_project_sheets(project_id)
+                    current_project_id_for_template = st.session_state.get("project_id")
+                    sheets_for_template = st.session_state.get("workbook_sheets") or load_project_sheets(current_project_id_for_template)
                     active_template_sheet = st.session_state.get("active_sheet_name") or (list(sheets_for_template.keys())[0] if sheets_for_template else "Working")
                     template_id = save_mission_template(template_name, template_desc, sheets_for_template, active_template_sheet, logged_in_user)
-                    log_audit_event(project_id, "mission_template_saved", logged_in_user, {"template": template_name})
+                    log_audit_event(current_project_id_for_template, "mission_template_saved", logged_in_user, {"template": template_name})
                     st.success(f"Template saved: {template_name}")
                     st.rerun()
                 except Exception as e:
