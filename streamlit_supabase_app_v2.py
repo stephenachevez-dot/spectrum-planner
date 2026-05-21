@@ -21,6 +21,8 @@
 # - Fixes Auto Deconflict Anchor so changing the anchor time repacks the schedule.
 # - Shows workbook-tab persistence status and saves all tabs permanently to Supabase.
 # - Fixes NaN/Inf JSON errors when saving workbook sheets.
+# - Adds admin-only project deletion for old projects.
+# - Adds approval workflow, audit trail, and PDF briefing export.
 
 import io
 import math
@@ -37,6 +39,7 @@ import matplotlib.pyplot as plt
 import pydeck as pdk
 from matplotlib.patches import Rectangle
 from matplotlib.lines import Line2D
+from matplotlib.backends.backend_pdf import PdfPages
 from supabase import create_client
 
 st.set_page_config(page_title="Spectrum Planner", page_icon="📡", layout="wide", initial_sidebar_state="expanded")
@@ -726,6 +729,7 @@ def save_project_sheets(project_id, sheets_dict, user):
 
     if payloads:
         sb.table("project_sheets").insert(payloads).execute()
+    log_audit_event(project_id, "workbook_sheets_saved", user, {"sheets": len(payloads)})
 
     return len(payloads)
 
@@ -787,21 +791,130 @@ def workbook_to_xlsx_bytes(sheets_dict):
     return bio.getvalue()
 
 
-def deck_to_html_bytes(deck):
-    """Create a downloadable standalone HTML map."""
+def log_audit_event(project_id, event_type, user, details=None):
+    """Best-effort audit logging. Never blocks the app if logging fails."""
     try:
-        html = deck.to_html(as_string=True, notebook_display=False)
-    except TypeError:
-        html = deck.to_html(as_string=True)
-    return html.encode("utf-8")
+        sb.table("project_audit_events").insert({
+            "project_id": project_id,
+            "event_type": str(event_type),
+            "event_by": str(user or ""),
+            "details": json_safe_value(details) if not isinstance(details, dict) else {str(k): json_safe_value(v) for k, v in details.items()},
+            "created_at": now_iso(),
+        }).execute()
+    except Exception:
+        pass
+
+
+def list_audit_events(project_id, limit=200):
+    try:
+        return (
+            sb.table("project_audit_events")
+            .select("*")
+            .eq("project_id", project_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return []
+
+
+def get_project_status(project_id):
+    try:
+        rows = sb.table("projects").select("status,approved_by,approved_at,status_note").eq("id", project_id).limit(1).execute().data or []
+        if rows:
+            return rows[0]
+    except Exception:
+        pass
+    return {"status": "Draft", "approved_by": None, "approved_at": None, "status_note": None}
+
+
+def set_project_status(project_id, status, user, note=""):
+    payload = {
+        "status": status,
+        "status_note": note,
+        "updated_at": now_iso(),
+    }
+    if status == "Approved":
+        payload["approved_by"] = user
+        payload["approved_at"] = now_iso()
+    elif status in ["Draft", "In Review", "Rejected"]:
+        payload["approved_by"] = None
+        payload["approved_at"] = None
+
+    sb.table("projects").update(payload).eq("id", project_id).execute()
+    log_audit_event(project_id, "status_change", user, {"status": status, "note": note})
+
+
+def briefing_pdf_bytes(project_name, status_info, df_ready, conflicts_eq, conflicts_ut, fig_list):
+    """Create a simple PDF briefing with summary, conflicts, and current figures."""
+    bio = io.BytesIO()
+    with PdfPages(bio) as pdf:
+        # Cover page
+        fig = plt.figure(figsize=(11, 8.5))
+        fig.text(0.08, 0.88, "Spectrum Planner Briefing", fontsize=24, weight="bold")
+        fig.text(0.08, 0.80, f"Project: {project_name}", fontsize=14)
+        fig.text(0.08, 0.75, f"Status: {status_info.get('status', 'Draft')}", fontsize=14)
+        fig.text(0.08, 0.70, f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", fontsize=12)
+        fig.text(0.08, 0.62, f"Rows: {len(df_ready)}", fontsize=12)
+        fig.text(0.08, 0.58, f"Equipment conflicts: {0 if conflicts_eq is None else len(conflicts_eq)}", fontsize=12)
+        fig.text(0.08, 0.54, f"Unit/Tech conflicts: {0 if conflicts_ut is None else len(conflicts_ut)}", fontsize=12)
+
+        if status_info.get("approved_by"):
+            fig.text(0.08, 0.48, f"Approved by: {status_info.get('approved_by')}", fontsize=12)
+            fig.text(0.08, 0.44, f"Approved at: {status_info.get('approved_at')}", fontsize=12)
+        if status_info.get("status_note"):
+            fig.text(0.08, 0.38, f"Status note: {status_info.get('status_note')}", fontsize=11)
+
+        fig.text(0.08, 0.12, "Generated from the current active plotting sheet.", fontsize=10)
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+
+        for fig in fig_list:
+            pdf.savefig(fig, bbox_inches="tight")
+
+    bio.seek(0)
+    return bio.getvalue()
 
 
 def list_projects():
     return sb.table("projects").select("*").order("updated_at", desc=True).execute().data or []
 
 def create_project(name, description):
-    res = sb.table("projects").insert({"name": name, "description": description, "updated_at": now_iso()}).execute()
-    return res.data[0]
+    res = sb.table("projects").insert({
+        "name": name,
+        "description": description,
+        "status": "Draft",
+        "updated_at": now_iso(),
+    }).execute()
+    proj = res.data[0]
+    log_audit_event(proj["id"], "project_created", logged_in_user if "logged_in_user" in globals() else "", {"name": name})
+    return proj
+
+def delete_project(project_id):
+    """Delete one project and its related rows/files/sheets/versions/events."""
+    log_audit_event(project_id, "project_deleted", logged_in_user if "logged_in_user" in globals() else "", {})
+    # Delete Storage files first, then tracking rows.
+    try:
+        file_rows = list_project_files(project_id)
+        paths = [r.get("storage_path") for r in file_rows if r.get("storage_path")]
+        if paths:
+            sb.storage.from_(STORAGE_BUCKET).remove(paths)
+    except Exception:
+        pass
+
+    # Child tables. The project row also has cascade rules for some tables, but this is explicit.
+    for table in ["allocation_rows", "allocation_versions", "save_events", "project_files", "project_sheets"]:
+        try:
+            sb.table(table).delete().eq("project_id", project_id).execute()
+        except Exception:
+            pass
+
+    # Delete the project itself.
+    return sb.table("projects").delete().eq("id", project_id).execute()
+
 
 def get_project_rows(project_id):
     res = (sb.table("allocation_rows")
@@ -839,6 +952,8 @@ def replace_project_rows(project_id, df, user):
         sb.table("allocation_rows").insert(payloads).execute()
 
     sb.table("projects").update({"updated_at": now_iso()}).eq("id", project_id).execute()
+    log_audit_event(project_id, "shared_table_cleared", user, {})
+    log_audit_event(project_id, "rows_saved", user, {"rows": len(payloads)})
 
 def next_version_no(project_id):
     res = (sb.table("allocation_versions").select("version_no")
@@ -867,6 +982,7 @@ def save_version(project_id, df, user, note):
         "created_at": now_iso(),
     }).execute()
 
+    log_audit_event(project_id, "version_saved", user, {"version_no": vno, "note": note})
     return vno
 
 def list_versions(project_id):
@@ -1353,6 +1469,36 @@ with st.sidebar:
             selected_name = st.selectbox("Project", project_names, index=0)
             st.session_state["project_id"] = next(p for p in projects if p["name"] == selected_name)["id"]
         else: st.info("Create your first project.")
+
+    if is_admin and projects:
+        with st.expander("Admin: Delete old projects", expanded=False):
+            st.warning("Deleting a project removes its allocation rows, workbook tabs, version history, saved files, and the project record.")
+            delete_options = [f"{p.get('name','Unnamed')} — {p.get('id','')}" for p in projects]
+            delete_label = st.selectbox("Project to delete", delete_options, key="delete_project_select")
+            delete_project_obj = projects[delete_options.index(delete_label)]
+            confirm_delete_project = st.checkbox(
+                f"I understand: permanently delete '{delete_project_obj.get('name','Unnamed')}'",
+                key="confirm_delete_project",
+            )
+            if st.button(
+                "Delete selected project",
+                type="primary",
+                use_container_width=True,
+                disabled=not confirm_delete_project,
+                key="delete_project_button",
+            ):
+                try:
+                    delete_project(delete_project_obj["id"])
+                    if st.session_state.get("project_id") == delete_project_obj["id"]:
+                        st.session_state.pop("project_id", None)
+                        st.session_state.pop("workbook_sheets", None)
+                        st.session_state.pop("active_sheet_name", None)
+                        st.session_state.pop("workbook_project_id", None)
+                    st.success("Project deleted.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Could not delete project: {e}")
+
     st.divider(); st.header("Plot controls")
     dark = st.checkbox("Dark theme", value=False)
     power_style = st.selectbox("Power plot style", ["outline_fill", "filled", "outline"], index=0, format_func=lambda x: {"outline_fill":"Outline + light fill", "filled":"Filled bands", "outline":"Outline only"}[x])
@@ -1394,6 +1540,16 @@ project_id = st.session_state.get("project_id")
 if not project_id:
     st.info("Create or select a project to begin."); st.stop()
 
+current_project = next((p for p in projects if p["id"] == project_id), {})
+project_name = current_project.get("name", "Selected")
+status_info = get_project_status(project_id)
+project_status = status_info.get("status", "Draft")
+
+# Approved projects are locked for editors/viewers. Admins can still make emergency changes.
+project_locked = project_status == "Approved" and not is_admin
+if project_locked:
+    can_edit = False
+
 current_df = get_project_rows(project_id)
 
 # Restore saved workbook sheets. If there are no saved sheets yet, use the shared allocation table as a single Working sheet.
@@ -1424,7 +1580,44 @@ if _saved_sheet_count == 0 and len(st.session_state.get("workbook_sheets", {})) 
     st.warning("Workbook tabs are visible in this session, but they have not been confirmed saved in Supabase yet. Click Save shared changes, or run the v17 SQL setup if saving fails.")
 
 cols = st.columns(4)
-cols[0].metric("Rows", len(current_df)); cols[1].metric("Project", next((p["name"] for p in projects if p["id"] == project_id), "Selected")); cols[2].metric("User", user_name); cols[3].metric("Storage", "Supabase JSON")
+cols[0].metric("Rows", len(current_df)); cols[1].metric("Project", project_name); cols[2].metric("Status", project_status); cols[3].metric("User", user_name)
+
+
+with st.expander("Workflow: Approval status", expanded=False):
+    st.write(f"Current status: **{project_status}**")
+    if status_info.get("approved_by"):
+        st.caption(f"Approved by {status_info.get('approved_by')} at {status_info.get('approved_at')}")
+    if status_info.get("status_note"):
+        st.caption(f"Note: {status_info.get('status_note')}")
+
+    status_note = st.text_input("Status note", value="", key=f"status_note_{project_id}")
+
+    c_submit, c_approve, c_reject, c_draft = st.columns(4)
+
+    with c_submit:
+        if st.button("Submit for review", use_container_width=True, disabled=not can_edit):
+            set_project_status(project_id, "In Review", logged_in_user, status_note)
+            st.success("Submitted for review.")
+            st.rerun()
+
+    with c_approve:
+        if st.button("Approve", type="primary", use_container_width=True, disabled=not is_admin):
+            set_project_status(project_id, "Approved", logged_in_user, status_note)
+            st.success("Project approved and locked for non-admin editors.")
+            st.rerun()
+
+    with c_reject:
+        if st.button("Reject", use_container_width=True, disabled=not is_admin):
+            set_project_status(project_id, "Rejected", logged_in_user, status_note)
+            st.warning("Project rejected.")
+            st.rerun()
+
+    with c_draft:
+        if st.button("Reopen draft", use_container_width=True, disabled=not is_admin):
+            set_project_status(project_id, "Draft", logged_in_user, status_note)
+            st.success("Project reopened as draft.")
+            st.rerun()
+
 
 
 if is_admin:
@@ -1564,6 +1757,17 @@ if is_admin:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Could not clear shared allocation table: {e}")
+
+
+
+with st.expander("Audit trail", expanded=False):
+    audit_rows = list_audit_events(project_id)
+    if not audit_rows:
+        st.info("No audit events yet.")
+    else:
+        audit_df = pd.DataFrame(audit_rows)
+        show_cols = [c for c in ["created_at", "event_type", "event_by", "details"] if c in audit_df.columns]
+        st.dataframe(audit_df[show_cols], use_container_width=True)
 
 
 with st.expander("Import / replace table from file or pasted CSV", expanded=(len(current_df)==0)):
@@ -1897,3 +2101,29 @@ with tab6:
         moves = moves.loc[abs(moves["ShiftMin"]) > .001]
         cols = [c for c in ["Equipment", "Tech", "Unit", "StartF", "EndF", "StartTimeOrig", "EndTimeOrig", "StartTimeDC", "EndTimeDC", "ShiftMin", "Placed"] if c in moves.columns]
         st.dataframe(moves[cols] if not moves.empty else pd.DataFrame({"Message": ["No rows were moved."]}), use_container_width=True)
+
+
+# ---------------- Briefing export ----------------
+with st.expander("Export briefing PDF", expanded=False):
+    st.caption("Exports a PDF briefing using the current active plotting sheet and current plot settings.")
+    if st.button("Build PDF briefing", use_container_width=True):
+        try:
+            pdf_figs = [
+                build_power_plot(df_ready, "Equipment", dark, alpha_val, tick_major, tick_minor, int(label_digits), pal_equipment, auto_thin, float(label_gap), high_power_top, power_style, float(outline_lwd), show_center_labels),
+                build_deconflict_plot(plot_df_conf, "Equipment", pal_equipment, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_eq),
+                build_power_plot(df_ready, grp_ut, dark, alpha_val, tick_major, tick_minor, int(label_digits), pal_unittech, auto_thin, float(label_gap), high_power_top, power_style, float(outline_lwd), show_center_labels),
+                build_deconflict_plot(plot_df_conf, grp_ut, pal_unittech, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_ut),
+            ]
+            pdf_bytes = briefing_pdf_bytes(project_name, status_info, df_ready, conf_eq, conf_ut, pdf_figs)
+            for _fig in pdf_figs:
+                plt.close(_fig)
+            st.download_button(
+                "Download briefing PDF",
+                data=pdf_bytes,
+                file_name=f"{safe_storage_filename(project_name)}_briefing.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+            log_audit_event(project_id, "briefing_pdf_generated", logged_in_user, {"project": project_name})
+        except Exception as e:
+            st.error(f"Could not build PDF briefing: {e}")
