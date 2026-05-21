@@ -41,6 +41,7 @@
 # - Adds local json import fallback and recursive backup JSON sanitizer.
 # - Restores missing conflict_summary function for Conflict Tables tab.
 # - Restores missing conflict recommendation helper functions.
+# - Restores missing Smart Planner helper functions.
 
 import io
 import json
@@ -2498,6 +2499,165 @@ def combined_conflict_recommendations(conf_eq, conf_ut, unittech_label):
 
     if not frames:
         return pd.DataFrame({"Message": ["No conflicts requiring recommendations."]})
+
+    return pd.concat(frames, ignore_index=True)
+
+
+
+def infer_planning_band(df, band_start=None, band_end=None):
+    """Determine planning band from user inputs or uploaded data bounds."""
+    start = pd.to_numeric(band_start, errors="coerce") if band_start not in [None, ""] else np.nan
+    end = pd.to_numeric(band_end, errors="coerce") if band_end not in [None, ""] else np.nan
+
+    data_min = pd.to_numeric(df.get("StartF"), errors="coerce").min()
+    data_max = pd.to_numeric(df.get("EndF"), errors="coerce").max()
+
+    if not np.isfinite(start):
+        start = data_min
+    if not np.isfinite(end):
+        end = data_max
+
+    if not np.isfinite(start) or not np.isfinite(end) or float(end) <= float(start):
+        return None, None
+
+    return float(start), float(end)
+
+
+def row_time_overlap(row, start_sec, end_sec):
+    """Check if a dataframe row overlaps a time window."""
+    rs = parse_time_one(row.get("StartTime"))
+    re = parse_time_one(row.get("EndTime"))
+    if pd.isna(rs) or pd.isna(re):
+        return True
+    if re < rs:
+        re += 86400
+    return time_overlap(float(rs), float(re), float(start_sec), float(end_sec))
+
+
+def candidate_frequency_is_clear(df, row_id_a, row_id_b, cand_start, cand_end, start_sec, end_sec, guard_mhz):
+    """Return True when candidate frequency range is clear during the conflict time window."""
+    for _, r in df.iterrows():
+        rid = r.get(".row_id")
+        if rid in [row_id_a, row_id_b]:
+            continue
+
+        sf = pd.to_numeric(r.get("StartF"), errors="coerce")
+        ef = pd.to_numeric(r.get("EndF"), errors="coerce")
+        if not np.isfinite(sf) or not np.isfinite(ef):
+            continue
+
+        if not row_time_overlap(r, start_sec, end_sec):
+            continue
+
+        if freq_overlap(cand_start, cand_end, float(sf), float(ef), guard_mhz):
+            return False
+
+    return True
+
+
+def smart_frequency_suggestions(df, conflicts, group_field, band_start, band_end, guard_mhz=0.025, step_mhz=0.025, max_each=3):
+    """Suggest alternate frequency ranges and time shifts for conflicts."""
+    if conflicts is None or conflicts.empty:
+        return pd.DataFrame({"Message": ["No conflicts to plan around."]})
+
+    d = df.copy()
+    band_start, band_end = infer_planning_band(d, band_start, band_end)
+    if band_start is None:
+        return pd.DataFrame({"Message": ["Could not determine planning band. Enter planning band start/end MHz."]})
+
+    suggestions = []
+
+    for _, c in conflicts.iterrows():
+        group_a = str(c.get("GroupA"))
+        group_b = str(c.get("GroupB"))
+        conflict_start = float(c.get("StartOverlap", 0))
+        conflict_end = float(c.get("EndOverlap", conflict_start))
+        overlap_mhz = float(c.get("FreqRight", 0) - c.get("FreqLeft", 0))
+
+        if group_field not in d.columns:
+            continue
+
+        rows_a = d[d[group_field].astype(str) == group_a].copy()
+        rows_b = d[d[group_field].astype(str) == group_b].copy()
+
+        pow_a = pd.to_numeric(rows_a.get("PowerW", pd.Series([0])), errors="coerce").max()
+        pow_b = pd.to_numeric(rows_b.get("PowerW", pd.Series([0])), errors="coerce").max()
+
+        move_group = group_b if (pd.isna(pow_a) or pd.isna(pow_b) or pow_b <= pow_a) else group_a
+        keep_group = group_a if move_group == group_b else group_b
+        move_rows = rows_b if move_group == group_b else rows_a
+
+        if move_rows.empty:
+            continue
+
+        move_rows["WidthMHz"] = pd.to_numeric(move_rows["EndF"], errors="coerce") - pd.to_numeric(move_rows["StartF"], errors="coerce")
+        move_row = move_rows.sort_values("WidthMHz", ascending=False).iloc[0]
+        width = float(move_row["WidthMHz"]) if np.isfinite(move_row["WidthMHz"]) and move_row["WidthMHz"] > 0 else max(overlap_mhz, step_mhz)
+        row_id = move_row.get(".row_id")
+
+        step = max(float(step_mhz), 0.001)
+        candidates = np.arange(band_start, max(band_start, band_end - width) + step / 2, step)
+
+        found = 0
+        for cs in candidates:
+            ce = float(cs + width)
+            if ce > band_end:
+                continue
+
+            if candidate_frequency_is_clear(d, row_id, None, float(cs), ce, conflict_start, conflict_end, float(guard_mhz)):
+                dist_from_original = min(abs(float(cs) - float(move_row["StartF"])), abs(ce - float(move_row["EndF"])))
+                suggestions.append({
+                    "Plan Type": "Frequency move",
+                    "Conflict": f"{group_a} vs {group_b}",
+                    "Move Group": move_group,
+                    "Keep Group": keep_group,
+                    "Suggested Start MHz": round(float(cs), 3),
+                    "Suggested End MHz": round(ce, 3),
+                    "Width MHz": round(width, 3),
+                    "Shift Distance MHz": round(dist_from_original, 3),
+                    "Conflict Window": f"{c.get('OverlapStartHM')}–{c.get('OverlapEndHM')}",
+                    "Reason": "Candidate range is clear during the conflict window with guard band applied.",
+                })
+                found += 1
+                if found >= int(max_each):
+                    break
+
+        delay_to = fmt_hhmm(float(c.get("EndOverlap", 0)) + 5 * 60)
+        suggestions.append({
+            "Plan Type": "Time move",
+            "Conflict": f"{group_a} vs {group_b}",
+            "Move Group": move_group,
+            "Keep Group": keep_group,
+            "Suggested Start MHz": "",
+            "Suggested End MHz": "",
+            "Width MHz": "",
+            "Shift Distance MHz": "",
+            "Conflict Window": f"{c.get('OverlapStartHM')}–{c.get('OverlapEndHM')}",
+            "Reason": f"If no clean frequency is acceptable, move {move_group} after {delay_to}.",
+        })
+
+    if not suggestions:
+        return pd.DataFrame({"Message": ["No smart suggestions found. Try widening the planning band or reducing guard band."]})
+
+    return pd.DataFrame(suggestions)
+
+
+def combined_smart_plan(df, conf_eq, conf_ut, grp_ut, band_start, band_end, guard_mhz, step_mhz, max_each):
+    """Combine equipment and unit/tech smart plan suggestions."""
+    frames = []
+
+    eq = smart_frequency_suggestions(df, conf_eq, "Equipment", band_start, band_end, guard_mhz, step_mhz, max_each)
+    if "Message" not in eq.columns:
+        eq.insert(0, "Conflict Type", "Equipment")
+        frames.append(eq)
+
+    ut = smart_frequency_suggestions(df, conf_ut, grp_ut, band_start, band_end, guard_mhz, step_mhz, max_each)
+    if "Message" not in ut.columns:
+        ut.insert(0, "Conflict Type", grp_ut)
+        frames.append(ut)
+
+    if not frames:
+        return pd.DataFrame({"Message": ["No smart planning suggestions available."]})
 
     return pd.concat(frames, ignore_index=True)
 
