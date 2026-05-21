@@ -28,6 +28,14 @@
 # - Adds KML export for map points/coverage and richer GIS-ready site popups.
 # - Adds live collaboration dashboard: online users, activity feed, and optional auto-refresh.
 # - Adds map heatmap/congestion layer for dense or overlapping spectrum activity.
+# - Adds conflict severity scoring, recommended actions, and CSV export.
+# - Adds mission templates so users can save/reuse standard workbook setups.
+# - Adds GeoJSON export for GIS/web map workflows.
+# - Adds terrain/range planning: distance, RF horizon estimate, and site-to-site LOS screening.
+# - Adds full project backup/restore JSON export for admins.
+# - Adds smart frequency planning with alternate frequency/time-shift recommendations.
+# - Adds Apply Smart Plan workflow to update workbook rows from selected recommendations.
+# - Adds row-level edit history, project dashboard, MGRS/USNG support, and smart import cleanup.
 
 import io
 import math
@@ -43,6 +51,10 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 import pydeck as pdk
+try:
+    import mgrs
+except Exception:
+    mgrs = None
 from matplotlib.patches import Rectangle
 from matplotlib.lines import Line2D
 from matplotlib.backends.backend_pdf import PdfPages
@@ -86,6 +98,7 @@ APP_COLUMNS = [
     "Power (W)", "Power (dBm)", "Tech", "Unit", "Notes",
     "Latitude", "Longitude", "Location",
     "Antenna Height", "Coverage Radius", "Site Name",
+    "MGRS", "USNG",
 ]
 
 STANDARD_RENAME = {
@@ -156,6 +169,10 @@ STANDARD_RENAME = {
     "Site Name": "Site Name",
     "SiteName": "Site Name",
     "Site": "Site Name",
+    "MGRS": "MGRS",
+    "USNG": "USNG",
+    "Grid": "MGRS",
+    "Military Grid": "MGRS",
 }
 
 INTERNAL_RENAME = {
@@ -177,6 +194,8 @@ INTERNAL_RENAME = {
     "Antenna Height": "AntennaHeight",
     "Coverage Radius": "CoverageRadius",
     "Site Name": "SiteName",
+    "MGRS": "MGRS",
+    "USNG": "USNG",
 }
 
 def now_iso():
@@ -503,10 +522,134 @@ def ticks_value(x):
     except Exception:
         return None
 
+
+def normalize_column_key(name):
+    """Loose column-name normalizer for smart imports."""
+    return re.sub(r"[^a-z0-9]+", "", str(name).strip().lower())
+
+
+SMART_COLUMN_ALIASES = {
+    "start": "Start Time",
+    "starttime": "Start Time",
+    "begin": "Start Time",
+    "begintime": "Start Time",
+    "end": "End Time",
+    "endtime": "End Time",
+    "stoptime": "End Time",
+    "equipment": "Equipment",
+    "equip": "Equipment",
+    "system": "Equipment",
+    "asset": "Equipment",
+    "centerfrequency": "Center Frequency (MHz)",
+    "centerfrequencymhz": "Center Frequency (MHz)",
+    "centerfreq": "Center Frequency (MHz)",
+    "centerfreqmhz": "Center Frequency (MHz)",
+    "frequency": "Center Frequency (MHz)",
+    "freq": "Center Frequency (MHz)",
+    "startfrequency": "Start Frequency (MHz)",
+    "startfrequencymhz": "Start Frequency (MHz)",
+    "startfreq": "Start Frequency (MHz)",
+    "startfreqmhz": "Start Frequency (MHz)",
+    "endfrequency": "End Frequency (MHz)",
+    "endfrequencymhz": "End Frequency (MHz)",
+    "endfreq": "End Frequency (MHz)",
+    "endfreqmhz": "End Frequency (MHz)",
+    "bandwidth": "Bandwidth (MHz)",
+    "bandwidthmhz": "Bandwidth (MHz)",
+    "bw": "Bandwidth (MHz)",
+    "power": "Power (W)",
+    "powerw": "Power (W)",
+    "watts": "Power (W)",
+    "powerdbm": "Power (dBm)",
+    "dbm": "Power (dBm)",
+    "lat": "Latitude",
+    "latitude": "Latitude",
+    "y": "Latitude",
+    "lon": "Longitude",
+    "long": "Longitude",
+    "lng": "Longitude",
+    "longitude": "Longitude",
+    "x": "Longitude",
+    "location": "Location",
+    "site": "Site Name",
+    "sitename": "Site Name",
+    "antennaheight": "Antenna Height",
+    "antennaheightft": "Antenna Height",
+    "antennaheightm": "Antenna Height",
+    "coverageradius": "Coverage Radius",
+    "coverageradiusnm": "Coverage Radius",
+    "coverageradiusmi": "Coverage Radius",
+    "coverageradiuskm": "Coverage Radius",
+    "mgrs": "MGRS",
+    "usng": "USNG",
+    "grid": "MGRS",
+    "militarygrid": "MGRS",
+}
+
+
+def smart_standardize_columns(df):
+    """Apply smart column cleanup beyond exact STANDARD_RENAME matching."""
+    out = df.copy()
+    new_cols = []
+    for c in out.columns:
+        raw = str(c).strip()
+        exact = STANDARD_RENAME.get(raw)
+        if exact:
+            new_cols.append(exact)
+            continue
+        key = normalize_column_key(raw)
+        new_cols.append(SMART_COLUMN_ALIASES.get(key, raw))
+    out.columns = new_cols
+    return out
+
+
+def mgrs_to_latlon(value):
+    """Convert MGRS/USNG to lat/lon if optional mgrs package is available."""
+    if mgrs is None:
+        return (np.nan, np.nan)
+    try:
+        grid = str(value).strip()
+        if not grid or grid.lower() in ["nan", "none", "null"]:
+            return (np.nan, np.nan)
+        converter = mgrs.MGRS()
+        lat, lon = converter.toLatLon(grid.replace(" ", ""))
+        return (float(lat), float(lon))
+    except Exception:
+        return (np.nan, np.nan)
+
+
+def fill_latlon_from_mgrs(df):
+    """Fill blank Latitude/Longitude from MGRS or USNG when possible."""
+    out = df.copy()
+    if "Latitude" not in out.columns:
+        out["Latitude"] = np.nan
+    if "Longitude" not in out.columns:
+        out["Longitude"] = np.nan
+
+    grid_col = None
+    if "MGRS" in out.columns and out["MGRS"].astype(str).str.strip().replace("nan", "").ne("").any():
+        grid_col = "MGRS"
+    elif "USNG" in out.columns and out["USNG"].astype(str).str.strip().replace("nan", "").ne("").any():
+        grid_col = "USNG"
+
+    if grid_col and mgrs is not None:
+        lat_vals = pd.to_numeric(out["Latitude"], errors="coerce")
+        lon_vals = pd.to_numeric(out["Longitude"], errors="coerce")
+        missing = lat_vals.isna() | lon_vals.isna()
+        for idx in out.index[missing]:
+            lat, lon = mgrs_to_latlon(out.at[idx, grid_col])
+            if np.isfinite(lat) and np.isfinite(lon):
+                out.at[idx, "Latitude"] = lat
+                out.at[idx, "Longitude"] = lon
+
+    return out
+
+
+
 def normalize_uploaded_df(df):
     """Normalize uploaded/pasted data and infer columns when a file has weak or shifted headers."""
-    out = df.copy()
-    out.columns = [STANDARD_RENAME.get(str(c).strip(), str(c).strip()) for c in out.columns]
+    out = smart_standardize_columns(df)
+    out = fill_latlon_from_mgrs(out)
 
     # Drop fully empty rows/columns.
     out = out.dropna(how="all").dropna(axis=1, how="all")
@@ -805,6 +948,304 @@ def map_congestion_summary(map_df):
     out["TotalPowerW"] = out["TotalPowerW"].round(2)
     out["AvgCoverage"] = out["AvgCoverage"].round(2)
     return out
+
+
+
+def map_df_to_geojson(map_df, project_name="Spectrum Planner"):
+    """Export map rows as GeoJSON FeatureCollection points."""
+    if map_df is None or map_df.empty:
+        return b'{"type":"FeatureCollection","features":[]}'
+
+    rows = map_df.copy()
+    rows["Latitude"] = pd.to_numeric(rows.get("Latitude"), errors="coerce")
+    rows["Longitude"] = pd.to_numeric(rows.get("Longitude"), errors="coerce")
+    rows = rows.dropna(subset=["Latitude", "Longitude"])
+
+    features = []
+    for _, r in rows.iterrows():
+        props = {}
+        for col in ["Equipment", "Tech", "Unit", "Location", "SiteName", "CoverageRadius", "AntennaHeight", "CenterF", "StartF", "EndF", "PowerW", "StartTime", "EndTime"]:
+            if col in rows.columns:
+                props[col] = json_safe_value(r.get(col))
+        props["project"] = project_name
+
+        features.append({
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [float(r["Longitude"]), float(r["Latitude"])],
+            },
+            "properties": props,
+        })
+
+    geojson = {
+        "type": "FeatureCollection",
+        "name": project_name,
+        "features": features,
+    }
+    import json
+    return json.dumps(geojson, indent=2).encode("utf-8")
+
+
+
+def haversine_distance_km(lat1, lon1, lat2, lon2):
+    """Great-circle distance in kilometers."""
+    r = 6371.0088
+    p1, p2 = math.radians(float(lat1)), math.radians(float(lat2))
+    dp = math.radians(float(lat2) - float(lat1))
+    dl = math.radians(float(lon2) - float(lon1))
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def bearing_degrees(lat1, lon1, lat2, lon2):
+    """Initial bearing from point 1 to point 2."""
+    lat1, lon1, lat2, lon2 = map(math.radians, [float(lat1), float(lon1), float(lat2), float(lon2)])
+    dlon = lon2 - lon1
+    y = math.sin(dlon) * math.cos(lat2)
+    x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+def parse_height_m(value, default_m=10.0):
+    """Parse antenna height. If a spreadsheet value is plain numeric, treat it as feet by default for field use."""
+    try:
+        raw = str(value).strip().lower()
+        if not raw or raw in ["nan", "none", "null"]:
+            return default_m
+        num = float(pd.to_numeric(re.sub(r"[^0-9.+-]", "", raw), errors="coerce"))
+        if not np.isfinite(num):
+            return default_m
+        if " m" in raw or raw.endswith("m"):
+            return num
+        # Default to feet because most US field worksheets use feet.
+        return num * 0.3048
+    except Exception:
+        return default_m
+
+
+def radio_horizon_km(height_m):
+    """Approximate RF horizon in km using 4/3 earth model."""
+    h = max(float(height_m), 0.0)
+    return 4.12 * math.sqrt(h)
+
+
+def build_range_analysis(map_df):
+    """Build pairwise site-to-site distance and approximate LOS/range table."""
+    if map_df is None or map_df.empty:
+        return pd.DataFrame({"Message": ["No map rows."]})
+
+    d = map_df.copy()
+    d["Latitude"] = pd.to_numeric(d.get("Latitude"), errors="coerce")
+    d["Longitude"] = pd.to_numeric(d.get("Longitude"), errors="coerce")
+    d = d.dropna(subset=["Latitude", "Longitude"]).reset_index(drop=True)
+
+    if len(d) < 2:
+        return pd.DataFrame({"Message": ["Need at least two mapped sites for path analysis."]})
+
+    if "AntennaHeight" not in d.columns:
+        d["AntennaHeight"] = np.nan
+
+    rows = []
+    for i in range(len(d)):
+        for j in range(i + 1, len(d)):
+            a = d.iloc[i]
+            b = d.iloc[j]
+
+            name_a = str(a.get("SiteName", "") or a.get("Equipment", f"Site {i+1}"))
+            name_b = str(b.get("SiteName", "") or b.get("Equipment", f"Site {j+1}"))
+
+            dist_km = haversine_distance_km(a["Latitude"], a["Longitude"], b["Latitude"], b["Longitude"])
+            dist_mi = dist_km * 0.621371
+            dist_nm = dist_km * 0.539957
+
+            h1 = parse_height_m(a.get("AntennaHeight", np.nan))
+            h2 = parse_height_m(b.get("AntennaHeight", np.nan))
+            horizon_km = radio_horizon_km(h1) + radio_horizon_km(h2)
+
+            margin_km = horizon_km - dist_km
+            if margin_km >= 5:
+                status = "Likely LOS"
+            elif margin_km >= 0:
+                status = "Marginal LOS"
+            else:
+                status = "Beyond horizon"
+
+            rows.append({
+                "Site A": name_a,
+                "Site B": name_b,
+                "Distance km": round(dist_km, 2),
+                "Distance mi": round(dist_mi, 2),
+                "Distance NM": round(dist_nm, 2),
+                "Bearing A→B": round(bearing_degrees(a["Latitude"], a["Longitude"], b["Latitude"], b["Longitude"]), 1),
+                "Antenna A m": round(h1, 1),
+                "Antenna B m": round(h2, 1),
+                "RF Horizon km": round(horizon_km, 2),
+                "Horizon Margin km": round(margin_km, 2),
+                "LOS Screen": status,
+            })
+
+    return pd.DataFrame(rows).sort_values(["LOS Screen", "Distance km"], ascending=[True, True]).reset_index(drop=True)
+
+
+def path_lines_geojson(range_df, map_df, project_name="Spectrum Planner"):
+    """Create GeoJSON LineString features for site-to-site paths."""
+    if range_df is None or range_df.empty or "Message" in range_df.columns:
+        return b'{"type":"FeatureCollection","features":[]}'
+
+    m = map_df.copy()
+    m["Latitude"] = pd.to_numeric(m.get("Latitude"), errors="coerce")
+    m["Longitude"] = pd.to_numeric(m.get("Longitude"), errors="coerce")
+    m["NameKey"] = m.apply(lambda r: str(r.get("SiteName", "") or r.get("Equipment", "")), axis=1)
+    lookup = {r["NameKey"]: r for _, r in m.dropna(subset=["Latitude", "Longitude"]).iterrows()}
+
+    features = []
+    for _, r in range_df.iterrows():
+        a = lookup.get(str(r.get("Site A")))
+        b = lookup.get(str(r.get("Site B")))
+        if a is None or b is None:
+            continue
+        props = {k: json_safe_value(v) for k, v in r.items()}
+        props["project"] = project_name
+        features.append({
+            "type": "Feature",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [
+                    [float(a["Longitude"]), float(a["Latitude"])],
+                    [float(b["Longitude"]), float(b["Latitude"])],
+                ],
+            },
+            "properties": props,
+        })
+
+    import json
+    return json.dumps({"type": "FeatureCollection", "name": f"{project_name} paths", "features": features}, indent=2).encode("utf-8")
+
+
+
+
+def export_project_backup(project_id):
+    """Export current project data, rows, versions, sheets, files metadata, members, and audit events."""
+    backup = {
+        "backup_version": 1,
+        "exported_at": now_iso(),
+        "project": {},
+        "allocation_rows": [],
+        "allocation_versions": [],
+        "project_sheets": [],
+        "project_files": [],
+        "project_members": [],
+        "save_events": [],
+        "project_audit_events": [],
+    }
+
+    tables = [
+        ("projects", "project"),
+        ("allocation_rows", "allocation_rows"),
+        ("allocation_versions", "allocation_versions"),
+        ("project_sheets", "project_sheets"),
+        ("project_files", "project_files"),
+        ("project_members", "project_members"),
+        ("save_events", "save_events"),
+        ("project_audit_events", "project_audit_events"),
+    ]
+
+    for table, key in tables:
+        try:
+            if table == "projects":
+                rows = sb.table(table).select("*").eq("id", project_id).limit(1).execute().data or []
+                backup[key] = rows[0] if rows else {}
+            else:
+                rows = sb.table(table).select("*").eq("project_id", project_id).execute().data or []
+                backup[key] = rows
+        except Exception:
+            backup[key] = {} if key == "project" else []
+
+    return json.dumps(backup, indent=2, default=str).encode("utf-8")
+
+
+def restore_project_backup(backup_bytes, new_project_name, user):
+    """Restore a backup into a new project. Original project id is not reused."""
+    if isinstance(backup_bytes, bytes):
+        raw = backup_bytes.decode("utf-8")
+    else:
+        raw = str(backup_bytes)
+
+    backup = json.loads(raw)
+    project = backup.get("project") or {}
+    name = new_project_name.strip() or f"Restored - {project.get('name', 'Project')}"
+    description = project.get("description") or "Restored from JSON backup"
+
+    new_project = create_project(name, description)
+    new_project_id = new_project["id"]
+
+    # Restore workbook sheets.
+    sheets_payload = []
+    for i, row in enumerate(backup.get("project_sheets", []) or []):
+        sheets_payload.append({
+            "project_id": new_project_id,
+            "sheet_name": row.get("sheet_name", f"Sheet {i+1}"),
+            "sheet_order": row.get("sheet_order", i + 1),
+            "sheet_data": row.get("sheet_data", []),
+            "uploaded_by": user,
+            "updated_at": now_iso(),
+        })
+    if sheets_payload:
+        sb.table("project_sheets").insert(sheets_payload).execute()
+
+    # Restore current allocation rows.
+    row_payload = []
+    for i, row in enumerate(backup.get("allocation_rows", []) or []):
+        row_payload.append({
+            "project_id": new_project_id,
+            "row_order": row.get("row_order", i),
+            "row_data": row.get("row_data", {}),
+            "updated_by": user,
+            "updated_at": now_iso(),
+        })
+    if row_payload:
+        sb.table("allocation_rows").insert(row_payload).execute()
+
+    # Restore versions.
+    version_payload = []
+    for row in backup.get("allocation_versions", []) or []:
+        version_payload.append({
+            "project_id": new_project_id,
+            "version_no": row.get("version_no"),
+            "saved_by": row.get("saved_by", user),
+            "save_note": f"Restored backup: {row.get('save_note', '')}",
+            "snapshot": row.get("snapshot", []),
+            "created_at": now_iso(),
+        })
+    if version_payload:
+        sb.table("allocation_versions").insert(version_payload).execute()
+
+    # Restore members as metadata, but always add restoring user as owner.
+    try:
+        upsert_project_member(new_project_id, current_user_id, user, "owner", user)
+    except Exception:
+        pass
+
+    # Restore file metadata only. Original Storage objects are not duplicated here.
+    file_payload = []
+    for row in backup.get("project_files", []) or []:
+        file_payload.append({
+            "project_id": new_project_id,
+            "file_name": row.get("file_name", "restored_file"),
+            "storage_path": row.get("storage_path", ""),
+            "uploaded_by": row.get("uploaded_by", user),
+            "uploaded_at": now_iso(),
+        })
+    if file_payload:
+        try:
+            sb.table("project_files").insert(file_payload).execute()
+        except Exception:
+            pass
+
+    log_audit_event(new_project_id, "project_restored_from_backup", user, {"source_project": project.get("name", "")})
+    return new_project
+
 
 
 # ---------------- Supabase JSON-backed operations ----------------
@@ -1208,6 +1649,184 @@ def user_has_project_access(project_id, user_id):
         return True
 
 
+def row_signature(row_data):
+    """Stable signature for a row for history comparison."""
+    key_bits = [
+        str(row_data.get("Equipment", "")),
+        str(row_data.get("Unit", "")),
+        str(row_data.get("Tech", "")),
+        str(row_data.get("Start Time", "")),
+        str(row_data.get("End Time", "")),
+        str(row_data.get("Center Frequency (MHz)", "")),
+        str(row_data.get("Start Frequency (MHz)", "")),
+        str(row_data.get("End Frequency (MHz)", "")),
+    ]
+    return "|".join(key_bits)
+
+
+def get_current_row_data(project_id):
+    rows = (
+        sb.table("allocation_rows")
+        .select("row_order,row_data")
+        .eq("project_id", project_id)
+        .order("row_order")
+        .execute()
+        .data
+        or []
+    )
+    return {int(r.get("row_order", 0)): (r.get("row_data") or {}) for r in rows}
+
+
+def diff_row_data(before, after):
+    changes = {}
+    keys = sorted(set((before or {}).keys()) | set((after or {}).keys()))
+    for k in keys:
+        b = json_safe_value((before or {}).get(k))
+        a = json_safe_value((after or {}).get(k))
+        if str(b) != str(a):
+            changes[k] = {"before": b, "after": a}
+    return changes
+
+
+def log_row_history(project_id, before_rows, after_records, user, source="save"):
+    """Log per-row before/after changes."""
+    payloads = []
+    for row_order, after in enumerate(after_records):
+        before = before_rows.get(row_order, {})
+        changes = diff_row_data(before, after)
+        if changes:
+            payloads.append({
+                "project_id": project_id,
+                "row_order": row_order,
+                "row_signature": row_signature(after),
+                "changed_by": user,
+                "change_source": source,
+                "before_data": before,
+                "after_data": after,
+                "changes": changes,
+                "created_at": now_iso(),
+            })
+
+    if payloads:
+        try:
+            sb.table("row_history").insert(payloads).execute()
+        except Exception:
+            pass
+
+
+def list_row_history(project_id, limit=300):
+    try:
+        return (
+            sb.table("row_history")
+            .select("*")
+            .eq("project_id", project_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return []
+
+
+def restore_row_from_history(project_id, history_row, user):
+    """Restore one row_order from a row_history record."""
+    row_order = int(history_row.get("row_order", 0))
+    after_data = history_row.get("before_data") or {}
+    current_rows = get_current_row_data(project_id)
+    before = current_rows.get(row_order, {})
+    current_rows[row_order] = after_data
+
+    records = [current_rows[i] for i in sorted(current_rows.keys())]
+    df = normalize_uploaded_df(pd.DataFrame(records))
+    replace_project_rows(project_id, df, user)
+    save_version(project_id, df, user, f"Restored row {row_order} from row history")
+    log_audit_event(project_id, "row_restored_from_history", user, {"row_order": row_order})
+    return df
+
+
+
+def list_mission_templates():
+    try:
+        return (
+            sb.table("mission_templates")
+            .select("*")
+            .order("updated_at", desc=True)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return []
+
+
+def save_mission_template(name, description, sheets_dict, active_sheet, user):
+    """Save current workbook sheets as a reusable mission template."""
+    if not name or not sheets_dict:
+        raise ValueError("Template name and workbook sheets are required.")
+
+    clean_sheets = {}
+    for sheet_name, df_sheet in sheets_dict.items():
+        clean_sheets[str(sheet_name)] = json_safe_records(normalize_uploaded_df(df_sheet))
+
+    payload = {
+        "name": name.strip(),
+        "description": description or "",
+        "template_data": clean_sheets,
+        "active_sheet": active_sheet,
+        "created_by": user,
+        "updated_by": user,
+        "updated_at": now_iso(),
+    }
+
+    existing = (
+        sb.table("mission_templates")
+        .select("id")
+        .eq("name", name.strip())
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+
+    if existing:
+        sb.table("mission_templates").update(payload).eq("id", existing[0]["id"]).execute()
+        return existing[0]["id"]
+
+    res = sb.table("mission_templates").insert(payload).execute()
+    return res.data[0]["id"]
+
+
+def delete_mission_template(template_id):
+    return sb.table("mission_templates").delete().eq("id", template_id).execute()
+
+
+def create_project_from_template(template, project_name, description, user):
+    """Create a project and populate its sheets/active allocation table from a template."""
+    proj = create_project(project_name, description)
+    template_data = template.get("template_data") or {}
+    active_sheet = template.get("active_sheet") or (list(template_data.keys())[0] if template_data else "Working")
+
+    sheets_dict = {}
+    for sheet_name, records in template_data.items():
+        sheets_dict[str(sheet_name)] = normalize_uploaded_df(pd.DataFrame(records or []))
+
+    if not sheets_dict:
+        sheets_dict = {"Working": pd.DataFrame(columns=APP_COLUMNS)}
+        active_sheet = "Working"
+
+    if active_sheet not in sheets_dict:
+        active_sheet = list(sheets_dict.keys())[0]
+
+    save_project_sheets(proj["id"], sheets_dict, user)
+    replace_project_rows(proj["id"], sheets_dict[active_sheet], user)
+    save_version(proj["id"], sheets_dict[active_sheet], user, f"Created from template: {template.get('name', '')}")
+    log_audit_event(proj["id"], "project_created_from_template", user, {"template": template.get("name", "")})
+
+    return proj
+
+
 def list_projects():
     all_projects = sb.table("projects").select("*").order("updated_at", desc=True).execute().data or []
     if is_admin:
@@ -1280,10 +1899,13 @@ def get_project_rows(project_id):
     return df[APP_COLUMNS].reset_index(drop=True)
 
 def replace_project_rows(project_id, df, user):
+    before_rows = get_current_row_data(project_id)
+
     sb.table("allocation_rows").delete().eq("project_id", project_id).execute()
 
     clean = normalize_uploaded_df(df).reset_index(drop=True)
     safe_rows = json_safe_records(clean)
+    log_row_history(project_id, before_rows, safe_rows, user, source="replace_project_rows")
     payloads = []
     for i, row_data in enumerate(safe_rows):
         row_data = {c: json_safe_value(row_data.get(c, None)) for c in APP_COLUMNS}
@@ -1508,16 +2130,254 @@ def auto_deconflict_smart(df, max_shift_sec, pad_sec, anchor_sec, guard_mhz=0.0,
     keep = [".row_id", "PlacedStartSec", "PlacedEndSec", "ShiftSec", "Placed", "StartTimeDC", "EndTimeDC"]
     return df.merge(out[keep], on=".row_id", how="left")
 
-def conflict_summary(conflicts):
+def conflict_recommendations(conflicts, label="Equipment"):
+    """Score conflicts and recommend practical deconfliction actions."""
     if conflicts is None or conflicts.empty:
-        return pd.DataFrame({"Message": ["No conflicts."]})
-    return pd.DataFrame({
-        "Freq Start (MHz)": conflicts["FreqLeft"].round(3),
-        "Freq End (MHz)": conflicts["FreqRight"].round(3),
-        "Window": conflicts["OverlapStartHM"] + " – " + conflicts["OverlapEndHM"],
-        "Overlap (min)": conflicts["OverlapMin"].round(1),
-        "Group A": conflicts["GroupA"], "Group B": conflicts["GroupB"]
+        return pd.DataFrame({"Message": [f"No {label} conflicts."]})
+
+    d = conflicts.copy()
+    d["OverlapMHz"] = (d["FreqRight"] - d["FreqLeft"]).round(3)
+    d["OverlapMinRounded"] = d["OverlapMin"].round(1)
+    d["SeverityScore"] = (d["OverlapMHz"].clip(lower=0) * d["OverlapMin"].clip(lower=0)).round(2)
+
+    def severity(row):
+        if row["OverlapMin"] >= 60 or row["OverlapMHz"] >= 10 or row["SeverityScore"] >= 300:
+            return "High"
+        if row["OverlapMin"] >= 15 or row["OverlapMHz"] >= 3 or row["SeverityScore"] >= 50:
+            return "Medium"
+        return "Low"
+
+    def action(row):
+        delay_to = fmt_hhmm(float(row["EndOverlap"]) + 5 * 60)
+        shift_freq = round(float(row["FreqRight"]) + 0.025, 3)
+        if row["OverlapMin"] >= 30:
+            return f"Separate time window first: move {row['GroupB']} start to {delay_to}, or schedule outside {row['OverlapStartHM']}–{row['OverlapEndHM']}."
+        if row["OverlapMHz"] >= 5:
+            return f"Frequency separation recommended: move one system above {shift_freq} MHz or apply a guard band."
+        return f"Low conflict: verify mission priority; add guard band or shift {row['GroupB']} after {delay_to}."
+
+    out = pd.DataFrame({
+        "Type": label,
+        "Severity": d.apply(severity, axis=1),
+        "Score": d["SeverityScore"],
+        "Freq Start (MHz)": d["FreqLeft"].round(3),
+        "Freq End (MHz)": d["FreqRight"].round(3),
+        "Overlap MHz": d["OverlapMHz"],
+        "Window": d["OverlapStartHM"] + " – " + d["OverlapEndHM"],
+        "Overlap Min": d["OverlapMinRounded"],
+        "Group A": d["GroupA"],
+        "Group B": d["GroupB"],
+        "Recommended Action": d.apply(action, axis=1),
     })
+
+    sev_order = {"High": 0, "Medium": 1, "Low": 2}
+    out["SeverityOrder"] = out["Severity"].map(sev_order).fillna(9)
+    out = out.sort_values(["SeverityOrder", "Score"], ascending=[True, False]).drop(columns=["SeverityOrder"])
+    return out.reset_index(drop=True)
+
+
+def infer_planning_band(df, band_start=None, band_end=None):
+    """Determine planning band from user inputs or uploaded data bounds."""
+    start = pd.to_numeric(band_start, errors="coerce") if band_start not in [None, ""] else np.nan
+    end = pd.to_numeric(band_end, errors="coerce") if band_end not in [None, ""] else np.nan
+
+    data_min = float(pd.to_numeric(df.get("StartF"), errors="coerce").min())
+    data_max = float(pd.to_numeric(df.get("EndF"), errors="coerce").max())
+
+    if not np.isfinite(start):
+        start = data_min
+    if not np.isfinite(end):
+        end = data_max
+
+    if not np.isfinite(start) or not np.isfinite(end) or end <= start:
+        return None, None
+
+    return float(start), float(end)
+
+
+def row_time_overlap(row, start_sec, end_sec):
+    """Check if a dataframe row overlaps a time window."""
+    rs = parse_time_one(row.get("StartTime"))
+    re = parse_time_one(row.get("EndTime"))
+    if pd.isna(rs) or pd.isna(re):
+        return True
+    if re < rs:
+        re += 86400
+    return time_overlap(float(rs), float(re), float(start_sec), float(end_sec))
+
+
+def candidate_frequency_is_clear(df, row_id_a, row_id_b, cand_start, cand_end, start_sec, end_sec, guard_mhz):
+    """Return True when candidate frequency range is clear during the conflict time window."""
+    for _, r in df.iterrows():
+        rid = r.get(".row_id")
+        if rid in [row_id_a, row_id_b]:
+            continue
+
+        sf = pd.to_numeric(r.get("StartF"), errors="coerce")
+        ef = pd.to_numeric(r.get("EndF"), errors="coerce")
+        if not np.isfinite(sf) or not np.isfinite(ef):
+            continue
+
+        if not row_time_overlap(r, start_sec, end_sec):
+            continue
+
+        if freq_overlap(cand_start, cand_end, float(sf), float(ef), guard_mhz):
+            return False
+
+    return True
+
+
+def smart_frequency_suggestions(df, conflicts, group_field, band_start, band_end, guard_mhz=0.025, step_mhz=0.025, max_each=3):
+    """Suggest alternate frequency ranges and time shifts for conflicts."""
+    if conflicts is None or conflicts.empty:
+        return pd.DataFrame({"Message": ["No conflicts to plan around."]})
+
+    d = df.copy()
+    band_start, band_end = infer_planning_band(d, band_start, band_end)
+    if band_start is None:
+        return pd.DataFrame({"Message": ["Could not determine planning band. Enter planning band start/end MHz."]})
+
+    suggestions = []
+
+    for _, c in conflicts.iterrows():
+        group_a = str(c.get("GroupA"))
+        group_b = str(c.get("GroupB"))
+        conflict_start = float(c.get("StartOverlap"))
+        conflict_end = float(c.get("EndOverlap"))
+        overlap_mhz = float(c.get("FreqRight") - c.get("FreqLeft"))
+
+        rows_a = d[d[group_field].astype(str) == group_a].copy() if group_field in d.columns else pd.DataFrame()
+        rows_b = d[d[group_field].astype(str) == group_b].copy() if group_field in d.columns else pd.DataFrame()
+
+        # Prefer moving the lower-power group if possible.
+        pow_a = pd.to_numeric(rows_a.get("PowerW", pd.Series([0])), errors="coerce").max()
+        pow_b = pd.to_numeric(rows_b.get("PowerW", pd.Series([0])), errors="coerce").max()
+
+        move_group = group_b if (pd.isna(pow_a) or pd.isna(pow_b) or pow_b <= pow_a) else group_a
+        keep_group = group_a if move_group == group_b else group_b
+        move_rows = rows_b if move_group == group_b else rows_a
+
+        if move_rows.empty:
+            continue
+
+        # Use widest row in moving group as representative.
+        move_rows["WidthMHz"] = pd.to_numeric(move_rows["EndF"], errors="coerce") - pd.to_numeric(move_rows["StartF"], errors="coerce")
+        move_row = move_rows.sort_values("WidthMHz", ascending=False).iloc[0]
+        width = float(move_row["WidthMHz"]) if np.isfinite(move_row["WidthMHz"]) and move_row["WidthMHz"] > 0 else max(overlap_mhz, step_mhz)
+        row_id = move_row.get(".row_id")
+
+        # Search candidate starts across band.
+        step = max(float(step_mhz), 0.001)
+        candidates = np.arange(band_start, max(band_start, band_end - width) + step / 2, step)
+
+        found = 0
+        for cs in candidates:
+            ce = float(cs + width)
+            if ce > band_end:
+                continue
+
+            if candidate_frequency_is_clear(d, row_id, None, float(cs), ce, conflict_start, conflict_end, float(guard_mhz)):
+                dist_from_original = min(abs(float(cs) - float(move_row["StartF"])), abs(ce - float(move_row["EndF"])))
+                suggestions.append({
+                    "Plan Type": "Frequency move",
+                    "Conflict": f"{group_a} vs {group_b}",
+                    "Move Group": move_group,
+                    "Keep Group": keep_group,
+                    "Suggested Start MHz": round(float(cs), 3),
+                    "Suggested End MHz": round(ce, 3),
+                    "Width MHz": round(width, 3),
+                    "Shift Distance MHz": round(dist_from_original, 3),
+                    "Conflict Window": f"{c.get('OverlapStartHM')}–{c.get('OverlapEndHM')}",
+                    "Reason": "Candidate range is clear during the conflict window with guard band applied.",
+                })
+                found += 1
+                if found >= int(max_each):
+                    break
+
+        # Always include a time fallback.
+        delay_to = fmt_hhmm(float(c.get("EndOverlap")) + 5 * 60)
+        suggestions.append({
+            "Plan Type": "Time move",
+            "Conflict": f"{group_a} vs {group_b}",
+            "Move Group": move_group,
+            "Keep Group": keep_group,
+            "Suggested Start MHz": "",
+            "Suggested End MHz": "",
+            "Width MHz": "",
+            "Shift Distance MHz": "",
+            "Conflict Window": f"{c.get('OverlapStartHM')}–{c.get('OverlapEndHM')}",
+            "Reason": f"If no clean frequency is acceptable, move {move_group} after {delay_to}.",
+        })
+
+    if not suggestions:
+        return pd.DataFrame({"Message": ["No smart suggestions found. Try widening the planning band or reducing guard band."]})
+
+    return pd.DataFrame(suggestions)
+
+
+def apply_smart_plan_to_sheet(sheet_df, recommendation):
+    """Apply one Smart Planner recommendation to the active sheet."""
+    out = normalize_uploaded_df(sheet_df).copy()
+    rec = dict(recommendation)
+
+    plan_type = str(rec.get("Plan Type", ""))
+    move_group = str(rec.get("Move Group", "")).strip()
+
+    if not move_group:
+        raise ValueError("Recommendation does not include a Move Group.")
+
+    # Match against Equipment, Unit, or Tech so recommendations from either conflict type can be applied.
+    mask = pd.Series(False, index=out.index)
+    for col in ["Equipment", "Unit", "Tech"]:
+        if col in out.columns:
+            mask = mask | (out[col].astype(str).str.strip() == move_group)
+
+    if not mask.any():
+        raise ValueError(f"No rows found for Move Group: {move_group}")
+
+    changed_rows = int(mask.sum())
+
+    if plan_type == "Frequency move":
+        new_start = pd.to_numeric(rec.get("Suggested Start MHz"), errors="coerce")
+        new_end = pd.to_numeric(rec.get("Suggested End MHz"), errors="coerce")
+
+        if not np.isfinite(new_start) or not np.isfinite(new_end) or new_end <= new_start:
+            raise ValueError("Selected frequency recommendation does not contain a valid frequency range.")
+
+        out.loc[mask, "Start Frequency (MHz)"] = float(new_start)
+        out.loc[mask, "End Frequency (MHz)"] = float(new_end)
+        out.loc[mask, "Center Frequency (MHz)"] = (float(new_start) + float(new_end)) / 2.0
+        out.loc[mask, "Bandwidth (MHz)"] = float(new_end) - float(new_start)
+
+        return out, f"Applied frequency move to {changed_rows} row(s) for {move_group}: {new_start:.3f}–{new_end:.3f} MHz."
+
+    if plan_type == "Time move":
+        reason = str(rec.get("Reason", ""))
+        # Extract HH:MM after the word "after".
+        match = re.search(r"after\\s+(\\d{2}:\\d{2})", reason)
+        if not match:
+            raise ValueError("Selected time recommendation does not contain a parseable new time.")
+
+        new_start_txt = match.group(1)
+        new_start_sec = parse_time_one(new_start_txt)
+        if pd.isna(new_start_sec):
+            raise ValueError("Could not parse recommended start time.")
+
+        for idx in out.index[mask]:
+            old_start = parse_time_one(out.at[idx, "Start Time"])
+            old_end = parse_time_one(out.at[idx, "End Time"])
+            if pd.isna(old_start) or pd.isna(old_end):
+                continue
+            if old_end < old_start:
+                old_end += 86400
+            duration = old_end - old_start
+            out.at[idx, "Start Time"] = fmt_hhmm(float(new_start_sec))
+            out.at[idx, "End Time"] = fmt_hhmm(float(new_start_sec) + float(duration))
+
+        return out, f"Applied time move to {changed_rows} row(s) for {move_group}: start after {new_start_txt}."
+
+    raise ValueError(f"Unsupported recommendation type: {plan_type}")
+
 
 # ---------------- Plotting ----------------
 def style_axes(ax, dark=False):
@@ -1838,6 +2698,58 @@ with st.sidebar:
             st.session_state["project_id"] = next(p for p in projects if p["name"] == selected_name)["id"]
         else: st.info("Create your first project.")
 
+    if can_edit:
+        with st.expander("Mission templates", expanded=False):
+            templates = list_mission_templates()
+            template_names = [t.get("name", "Unnamed") for t in templates]
+
+            st.markdown("#### Create project from template")
+            if templates:
+                selected_template_name = st.selectbox("Template", template_names, key="template_select_create")
+                selected_template = templates[template_names.index(selected_template_name)]
+                new_template_project_name = st.text_input("New project name from template", key="template_new_project_name")
+                new_template_project_desc = st.text_area("New project description", height=70, key="template_new_project_desc")
+                if st.button("Create project from selected template", type="primary", use_container_width=True):
+                    if not new_template_project_name.strip():
+                        st.error("Project name is required.")
+                    else:
+                        try:
+                            proj = create_project_from_template(selected_template, new_template_project_name.strip(), new_template_project_desc.strip(), logged_in_user)
+                            st.session_state["project_id"] = proj["id"]
+                            st.success("Project created from template.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Could not create project from template: {e}")
+            else:
+                st.info("No templates saved yet.")
+
+            st.markdown("#### Save current project as template")
+            template_name = st.text_input("Template name", key="template_save_name")
+            template_desc = st.text_area("Template description", height=70, key="template_save_desc")
+            if st.button("Save current workbook as template", use_container_width=True, disabled=not project_id):
+                try:
+                    sheets_for_template = st.session_state.get("workbook_sheets") or load_project_sheets(project_id)
+                    active_template_sheet = st.session_state.get("active_sheet_name") or (list(sheets_for_template.keys())[0] if sheets_for_template else "Working")
+                    template_id = save_mission_template(template_name, template_desc, sheets_for_template, active_template_sheet, logged_in_user)
+                    log_audit_event(project_id, "mission_template_saved", logged_in_user, {"template": template_name})
+                    st.success(f"Template saved: {template_name}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Could not save template: {e}")
+
+            if is_admin and templates:
+                st.markdown("#### Delete template")
+                delete_template_name = st.selectbox("Template to delete", template_names, key="template_delete_select")
+                delete_template = templates[template_names.index(delete_template_name)]
+                confirm_delete_template = st.checkbox(f"I understand: delete template '{delete_template_name}'", key="confirm_delete_template")
+                if st.button("Delete selected template", type="primary", use_container_width=True, disabled=not confirm_delete_template):
+                    try:
+                        delete_mission_template(delete_template["id"])
+                        st.success("Template deleted.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not delete template: {e}")
+
     if is_admin and projects:
         with st.expander("Admin: Delete old projects", expanded=False):
             st.warning("Deleting a project removes its allocation rows, workbook tabs, version history, saved files, and the project record.")
@@ -1891,6 +2803,15 @@ with st.sidebar:
     guard_mhz = st.number_input("Frequency guard band (MHz)", min_value=0.0, value=0.0, step=0.1)
     allow_earlier = st.checkbox("Allow moving earlier into open gaps", value=True)
     priority_mode = st.selectbox("Scheduling priority", ["Power + Original Time", "Highest Power First", "Shortest Duration First"], index=0)
+
+    st.divider()
+    st.header("Smart planner")
+    plan_band_start = st.text_input("Planning band start MHz", value="")
+    plan_band_end = st.text_input("Planning band end MHz", value="")
+    plan_guard_mhz = st.number_input("Planner guard band MHz", min_value=0.0, value=0.025, step=0.025)
+    plan_step_mhz = st.number_input("Planner frequency step MHz", min_value=0.001, value=0.025, step=0.001)
+    max_suggestions = st.number_input("Max suggestions per conflict", min_value=1, max_value=10, value=3, step=1)
+
     st.divider(); st.header("Box labels")
     box_labels = st.checkbox("Show label inside boxes", value=True)
     box_label_min_height_min = st.number_input("Min box height for label (min)", min_value=0.0, value=15.0, step=5.0)
@@ -1905,6 +2826,11 @@ with st.sidebar:
     show_heatmap = st.checkbox("Show heatmap / congestion layer", value=False)
     heatmap_weight_by = st.selectbox("Heatmap weight by", ["Power", "Coverage Radius", "Equal"], index=0)
     map_style_choice = st.selectbox("Map style", ["light", "dark", "satellite"], index=0)
+
+    st.divider()
+    st.header("Terrain / Range")
+    default_ant_height_m = st.number_input("Default antenna height when blank (m)", min_value=1.0, value=10.0, step=1.0)
+    show_range_warning = st.checkbox("Show LOS/range warnings", value=True)
 
     st.divider()
     st.header("Collaboration")
@@ -1974,6 +2900,29 @@ if st.button("Refresh latest project data", use_container_width=True):
     log_audit_event(project_id, "manual_refresh", logged_in_user, {})
     st.rerun()
 
+with st.expander("Project dashboard", expanded=False):
+    st.caption("At-a-glance project health, collaboration, and data status.")
+
+    dash_cols = st.columns(5)
+    dash_cols[0].metric("Rows", len(current_df))
+    dash_cols[1].metric("Workbook tabs", len(st.session_state.get("workbook_sheets", {})))
+    dash_cols[2].metric("Status", project_status)
+    try:
+        dash_cols[3].metric("Versions", len(list_versions(project_id)))
+    except Exception:
+        dash_cols[3].metric("Versions", "—")
+    try:
+        dash_cols[4].metric("Members", len(list_project_members(project_id)))
+    except Exception:
+        dash_cols[4].metric("Members", "—")
+
+    dashboard_activity = list_recent_activity(project_id, limit=10)
+    if not dashboard_activity.empty:
+        st.markdown("#### Latest activity")
+        st.dataframe(dashboard_activity, use_container_width=True)
+
+
+
 
 with st.expander("Workflow: Approval status", expanded=False):
     st.write(f"Current status: **{project_status}**")
@@ -2010,6 +2959,17 @@ with st.expander("Workflow: Approval status", expanded=False):
             st.success("Project reopened as draft.")
             st.rerun()
 
+
+
+
+with st.expander("Mission template library", expanded=False):
+    templates = list_mission_templates()
+    if not templates:
+        st.info("No mission templates saved yet.")
+    else:
+        template_df = pd.DataFrame(templates)
+        show_cols = [c for c in ["name", "description", "created_by", "updated_by", "updated_at", "active_sheet"] if c in template_df.columns]
+        st.dataframe(template_df[show_cols], use_container_width=True)
 
 
 with st.expander("Live collaboration dashboard", expanded=False):
@@ -2185,6 +3145,39 @@ if is_admin:
                             st.error(f"Could not remove project member: {e}")
 
 
+
+if is_admin:
+    with st.expander("Admin: Project backup / restore", expanded=False):
+        st.caption("Export the complete selected project as JSON, or restore a backup into a new project.")
+
+        b1, b2 = st.columns(2)
+
+        with b1:
+            st.markdown("#### Backup current project")
+            st.download_button(
+                "Download full project backup JSON",
+                data=export_project_backup(project_id),
+                file_name=f"{safe_storage_filename(project_name)}_project_backup.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+
+        with b2:
+            st.markdown("#### Restore backup as new project")
+            backup_upload = st.file_uploader("Upload project backup JSON", type=["json"], key="restore_backup_json")
+            restore_name = st.text_input("Restored project name", value=f"Restored - {project_name}", key="restore_project_name")
+            confirm_restore = st.checkbox("I understand: restore backup into a new project", key="confirm_restore_backup")
+
+            if st.button("Restore backup", type="primary", use_container_width=True, disabled=not (backup_upload and confirm_restore)):
+                try:
+                    restored_project = restore_project_backup(backup_upload.getvalue(), restore_name, logged_in_user)
+                    st.session_state["project_id"] = restored_project["id"]
+                    st.success("Backup restored into a new project.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Could not restore backup: {e}")
+
+
 if is_admin:
     with st.expander("Admin: Delete data", expanded=False):
         st.warning("These actions affect the selected project only. They cannot be undone.")
@@ -2249,6 +3242,35 @@ with st.expander("Audit trail", expanded=False):
         st.dataframe(audit_df[show_cols], use_container_width=True)
 
 
+
+with st.expander("Row-level edit history", expanded=False):
+    history_rows = list_row_history(project_id)
+    if not history_rows:
+        st.info("No row history yet. Save changes to start tracking row-level edits.")
+    else:
+        hist_df = pd.DataFrame(history_rows)
+        show_cols = [c for c in ["created_at", "row_order", "changed_by", "change_source", "changes"] if c in hist_df.columns]
+        st.dataframe(hist_df[show_cols], use_container_width=True)
+
+        if can_edit:
+            st.markdown("#### Restore one row")
+            labels = [
+                f"{r.get('created_at','')} | row {r.get('row_order')} | {r.get('changed_by','')}"
+                for r in history_rows
+            ]
+            selected_hist_label = st.selectbox("History record", labels, key=f"row_history_select_{project_id}")
+            selected_hist = history_rows[labels.index(selected_hist_label)]
+            confirm_restore_row = st.checkbox("I understand: restore this one row from its previous value", key=f"confirm_row_restore_{project_id}")
+            if st.button("Restore selected row", type="primary", use_container_width=True, disabled=not confirm_restore_row):
+                try:
+                    restored_df = restore_row_from_history(project_id, selected_hist, logged_in_user)
+                    st.session_state["workbook_sheets"] = {st.session_state.get("active_sheet_name", "Restored"): restored_df}
+                    st.success("Selected row restored.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Could not restore row: {e}")
+
+
 with st.expander("Import / replace table from file or pasted CSV", expanded=(len(current_df)==0)):
     c1, c2 = st.columns(2)
 
@@ -2291,6 +3313,15 @@ with st.expander("Import / replace table from file or pasted CSV", expanded=(len
 
             st.caption(f"Pending upload: {st.session_state.get('pending_upload_name', 'uploaded file')} — {len(sheet_names)} sheet(s)")
             st.dataframe(st.session_state["pending_upload_df"].head(20), use_container_width=True)
+
+            with st.expander("Smart import cleanup / column mapping", expanded=False):
+                st.caption("Detected normalized columns. Edit the file headers if anything looks wrong, then re-upload.")
+                mapping_preview = pd.DataFrame({
+                    "Imported / normalized columns": list(st.session_state["pending_upload_df"].columns)
+                })
+                st.dataframe(mapping_preview, use_container_width=True)
+                if mgrs is None:
+                    st.info("MGRS/USNG conversion requires adding `mgrs` to requirements. Without it, Latitude/Longitude must be provided directly.")
 
             b1, b2 = st.columns(2)
             with b1:
@@ -2488,13 +3519,16 @@ if auto_dc:
 conf_eq = detect_conflicts_generic(plot_df_conf, "Equipment", guard_mhz)
 conf_ut = detect_conflicts_generic(plot_df_conf, grp_ut, guard_mhz)
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "Equipment Power",
     "Equipment Deconfliction",
     f"{grp_ut} Power",
     f"{grp_ut} Deconfliction",
     "Map View",
     "Conflict Tables",
+    "Conflict Recommendations",
+    "Terrain / Range",
+    "Smart Planner",
 ])
 
 with tab1:
@@ -2544,7 +3578,7 @@ with tab5:
     else:
         st.pydeck_chart(deck, use_container_width=True)
 
-        d1, d2, d3 = st.columns(3)
+        d1, d2, d3, d4 = st.columns(4)
         with d1:
             st.download_button(
                 "Download map HTML",
@@ -2569,9 +3603,17 @@ with tab5:
                 mime="application/vnd.google-earth.kml+xml",
                 use_container_width=True,
             )
+        with d4:
+            st.download_button(
+                "Download GeoJSON",
+                data=map_df_to_geojson(map_df, project_name),
+                file_name=f"{safe_storage_filename(project_name)}_map.geojson",
+                mime="application/geo+json",
+                use_container_width=True,
+            )
 
         st.markdown("#### Map rows")
-        display_cols = [c for c in ["Equipment", "Tech", "Unit", "Latitude", "Longitude", "Location", "SiteName", "CoverageRadius", "AntennaHeight", "CenterF", "PowerW", "StartTime", "EndTime"] if c in map_df.columns]
+        display_cols = [c for c in ["Equipment", "Tech", "Unit", "Latitude", "Longitude", "MGRS", "USNG", "Location", "SiteName", "CoverageRadius", "AntennaHeight", "CenterF", "PowerW", "StartTime", "EndTime"] if c in map_df.columns]
         st.dataframe(map_df[display_cols], use_container_width=True)
 
         with st.expander("Map congestion summary", expanded=False):
@@ -2594,6 +3636,197 @@ with tab6:
         moves = moves.loc[abs(moves["ShiftMin"]) > .001]
         cols = [c for c in ["Equipment", "Tech", "Unit", "StartF", "EndF", "StartTimeOrig", "EndTimeOrig", "StartTimeDC", "EndTimeDC", "ShiftMin", "Placed"] if c in moves.columns]
         st.dataframe(moves[cols] if not moves.empty else pd.DataFrame({"Message": ["No rows were moved."]}), use_container_width=True)
+
+
+
+with tab7:
+    st.markdown("#### Conflict Severity + Recommended Actions")
+    rec_df = combined_conflict_recommendations(conf_eq, conf_ut, grp_ut)
+
+    if "Message" in rec_df.columns:
+        st.info(rec_df["Message"].iloc[0])
+    else:
+        high_count = int((rec_df["Severity"] == "High").sum())
+        medium_count = int((rec_df["Severity"] == "Medium").sum())
+        low_count = int((rec_df["Severity"] == "Low").sum())
+
+        c_high, c_med, c_low = st.columns(3)
+        c_high.metric("High", high_count)
+        c_med.metric("Medium", medium_count)
+        c_low.metric("Low", low_count)
+
+        st.dataframe(rec_df, use_container_width=True)
+
+        st.download_button(
+            "Download conflict recommendations CSV",
+            data=rec_df.to_csv(index=False).encode("utf-8"),
+            file_name="conflict_recommendations.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+        log_audit_event(project_id, "conflict_recommendations_viewed", logged_in_user, {"rows": len(rec_df)})
+
+
+
+
+with tab8:
+    st.markdown("#### Terrain / Range Planning")
+    st.caption("This is an approximate RF-horizon screening tool using antenna height and great-circle distance. It does not use live elevation terrain data yet.")
+
+    deck_for_range, map_df_for_range = build_map_deck(
+        df_ready,
+        map_group_field,
+        pal_map,
+        radius_units=radius_units,
+        show_coverage=show_coverage,
+        map_style=map_style_choice,
+        show_heatmap=False,
+        heatmap_weight_by=heatmap_weight_by,
+    )
+
+    if map_df_for_range is None or map_df_for_range.empty:
+        st.info("Add valid Latitude and Longitude values to use terrain/range analysis.")
+    else:
+        if "AntennaHeight" not in map_df_for_range.columns:
+            map_df_for_range["AntennaHeight"] = default_ant_height_m
+
+        range_df = build_range_analysis(map_df_for_range)
+
+        if "Message" in range_df.columns:
+            st.info(range_df["Message"].iloc[0])
+        else:
+            likely_count = int((range_df["LOS Screen"] == "Likely LOS").sum())
+            marginal_count = int((range_df["LOS Screen"] == "Marginal LOS").sum())
+            blocked_count = int((range_df["LOS Screen"] == "Beyond horizon").sum())
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Likely LOS", likely_count)
+            c2.metric("Marginal", marginal_count)
+            c3.metric("Beyond horizon", blocked_count)
+
+            if show_range_warning and blocked_count:
+                st.warning("Some paths are beyond the approximate RF horizon. Increase antenna height, add relay sites, or reduce path distance.")
+
+            st.dataframe(range_df, use_container_width=True)
+
+            d1, d2 = st.columns(2)
+            with d1:
+                st.download_button(
+                    "Download range analysis CSV",
+                    data=range_df.to_csv(index=False).encode("utf-8"),
+                    file_name="range_analysis.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            with d2:
+                st.download_button(
+                    "Download path GeoJSON",
+                    data=path_lines_geojson(range_df, map_df_for_range, project_name),
+                    file_name=f"{safe_storage_filename(project_name)}_paths.geojson",
+                    mime="application/geo+json",
+                    use_container_width=True,
+                )
+
+            log_audit_event(project_id, "range_analysis_viewed", logged_in_user, {"paths": len(range_df)})
+
+
+
+
+with tab9:
+    st.markdown("#### Smart Frequency Planner")
+    st.caption("Suggests alternate frequency ranges and time fallback actions using the current conflicts, planning band, guard band, and priority rules.")
+
+    plan_df = combined_smart_plan(
+        df_ready,
+        conf_eq,
+        conf_ut,
+        grp_ut,
+        plan_band_start,
+        plan_band_end,
+        float(plan_guard_mhz),
+        float(plan_step_mhz),
+        int(max_suggestions),
+    )
+
+    if "Message" in plan_df.columns:
+        st.info(plan_df["Message"].iloc[0])
+    else:
+        freq_moves = int((plan_df["Plan Type"] == "Frequency move").sum())
+        time_moves = int((plan_df["Plan Type"] == "Time move").sum())
+        c1, c2 = st.columns(2)
+        c1.metric("Frequency move options", freq_moves)
+        c2.metric("Time fallback options", time_moves)
+
+        st.dataframe(plan_df, use_container_width=True)
+
+        st.download_button(
+            "Download smart plan CSV",
+            data=plan_df.to_csv(index=False).encode("utf-8"),
+            file_name="smart_frequency_plan.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+        st.markdown("#### Apply selected recommendation")
+        st.warning("Review carefully before applying. This updates the active workbook sheet and saves a new version snapshot.")
+
+        option_labels = [
+            f"{i}: {row['Plan Type']} | {row['Move Group']} | {row['Conflict']} | {row['Reason'][:90]}"
+            for i, row in plan_df.reset_index(drop=True).iterrows()
+        ]
+
+        selected_plan_label = st.selectbox("Recommendation to apply", option_labels, key=f"apply_plan_select_{project_id}")
+        selected_plan_idx = int(selected_plan_label.split(":", 1)[0])
+        selected_plan = plan_df.reset_index(drop=True).iloc[selected_plan_idx].to_dict()
+
+        st.json({k: json_safe_value(v) for k, v in selected_plan.items()})
+
+        confirm_apply = st.checkbox(
+            "I reviewed this recommendation and want to apply it to the active sheet",
+            key=f"confirm_apply_smart_plan_{project_id}",
+        )
+
+        if st.button(
+            "Apply selected smart plan",
+            type="primary",
+            use_container_width=True,
+            disabled=not (can_edit and confirm_apply),
+        ):
+            try:
+                active_sheet = st.session_state.get("active_sheet_name") or list(edited_sheets.keys())[0]
+                base_sheet = edited_sheets.get(active_sheet, edited_df)
+
+                updated_sheet, apply_note = apply_smart_plan_to_sheet(base_sheet, selected_plan)
+
+                updated_sheets = dict(edited_sheets)
+                updated_sheets[active_sheet] = updated_sheet
+
+                save_project_sheets(project_id, updated_sheets, logged_in_user)
+                replace_project_rows(project_id, updated_sheet, logged_in_user)
+                version_no = save_version(project_id, updated_sheet, logged_in_user, f"Applied smart plan: {apply_note}")
+
+                st.session_state["workbook_sheets"] = updated_sheets
+                st.session_state["active_sheet_name"] = active_sheet
+
+                log_audit_event(
+                    project_id,
+                    "smart_plan_applied",
+                    logged_in_user,
+                    {
+                        "active_sheet": active_sheet,
+                        "version_no": version_no,
+                        "note": apply_note,
+                        "recommendation": {k: json_safe_value(v) for k, v in selected_plan.items()},
+                    },
+                )
+
+                st.success(f"{apply_note} Saved version {version_no}.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not apply selected recommendation: {e}")
+
+        log_audit_event(project_id, "smart_frequency_plan_generated", logged_in_user, {"rows": len(plan_df)})
 
 
 # ---------------- Briefing export ----------------
