@@ -23,6 +23,7 @@
 # - Fixes NaN/Inf JSON errors when saving workbook sheets.
 # - Adds admin-only project deletion for old projects.
 # - Adds approval workflow, audit trail, and PDF briefing export.
+# - Fixes missing map HTML download helper.
 
 import io
 import math
@@ -639,6 +640,15 @@ def fig_to_png_bytes(fig):
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=150)
     buf.seek(0)
     return buf.getvalue()
+
+def deck_to_html_bytes(deck):
+    """Create a downloadable standalone HTML map."""
+    try:
+        html = deck.to_html(as_string=True, notebook_display=False)
+    except TypeError:
+        html = deck.to_html(as_string=True)
+    return html.encode("utf-8")
+
 
 # ---------------- Supabase JSON-backed operations ----------------
 
