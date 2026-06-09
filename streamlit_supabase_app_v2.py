@@ -451,6 +451,267 @@ def apply_pcc6_dark_ui():
     .v45-metric.red .v45-metric-value { color: #ff554d; }
     .v45-metric.amber .v45-metric-value { color: #ffb020; }
 
+    
+    /* V46 FULL WEB APP SHELL */
+    .app-shell-topbar {
+        position: sticky;
+        top: 0;
+        z-index: 999;
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        align-items: center;
+        gap: 1rem;
+        padding: .7rem .95rem;
+        margin: -.35rem 0 .75rem 0;
+        background: rgba(3, 10, 15, .92);
+        backdrop-filter: blur(12px);
+        border: 1px solid #1d3340;
+        border-radius: 10px;
+        box-shadow: 0 12px 32px rgba(0,0,0,.32);
+    }
+
+    .app-brand {
+        display: flex;
+        align-items: center;
+        gap: .65rem;
+        white-space: nowrap;
+    }
+
+    .app-logo {
+        width: 38px;
+        height: 38px;
+        border-radius: 9px;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(135deg, #1f5fae, #0e9f6e);
+        box-shadow: 0 0 0 1px rgba(255,255,255,.14), 0 8px 18px rgba(0,0,0,.35);
+        font-size: 1.25rem;
+    }
+
+    .app-title-main {
+        color: #f8fbff;
+        font-size: 1.28rem;
+        font-weight: 950;
+        letter-spacing: .035em;
+        line-height: 1;
+    }
+
+    .app-title-sub {
+        color: #86a4b2;
+        font-size: .72rem;
+        margin-top: .18rem;
+    }
+
+    .app-classification {
+        justify-self: center;
+        color: #55ff55;
+        font-weight: 850;
+        font-size: .77rem;
+        border: 1px solid rgba(85,255,85,.38);
+        background: rgba(34,197,94,.08);
+        border-radius: 999px;
+        padding: .32rem .75rem;
+        white-space: nowrap;
+    }
+
+    .app-actions {
+        display: flex;
+        align-items: center;
+        gap: .5rem;
+        justify-content: flex-end;
+        color: #dce8ee;
+        font-size: .78rem;
+        white-space: nowrap;
+    }
+
+    .app-action-pill {
+        border: 1px solid #284755;
+        background: #071922;
+        border-radius: 6px;
+        padding: .36rem .55rem;
+        color: #dce8ee;
+    }
+
+    .webapp-layout {
+        display: grid;
+        grid-template-columns: 230px 1fr;
+        gap: .75rem;
+        align-items: start;
+    }
+
+    .webapp-nav {
+        position: sticky;
+        top: 82px;
+        border: 1px solid #213946;
+        background: linear-gradient(180deg, rgba(8,22,31,.98), rgba(4,13,19,.98));
+        border-radius: 10px;
+        padding: .65rem;
+        min-height: 650px;
+        box-shadow: 0 14px 30px rgba(0,0,0,.28);
+    }
+
+    .webapp-nav-title {
+        color: #f7fbff;
+        font-size: .78rem;
+        font-weight: 900;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+        margin: .25rem .35rem .65rem .35rem;
+    }
+
+    .webapp-nav-item {
+        display: flex;
+        align-items: center;
+        gap: .5rem;
+        padding: .7rem .72rem;
+        border-radius: 7px;
+        color: #b9cbd3;
+        font-size: .82rem;
+        font-weight: 750;
+        margin-bottom: .28rem;
+        border: 1px solid transparent;
+    }
+
+    .webapp-nav-item.active {
+        background: linear-gradient(90deg, #1f5fae, rgba(31,95,174,.35));
+        color: white;
+        border-color: rgba(93,181,255,.42);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
+    }
+
+    .webapp-nav-item:hover {
+        background: rgba(255,255,255,.04);
+        border-color: #263f4d;
+    }
+
+    .webapp-content {
+        min-width: 0;
+    }
+
+    .web-grid-4 {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: .75rem;
+        margin-bottom: .75rem;
+    }
+
+    .web-card {
+        border: 1px solid #223946;
+        background: linear-gradient(180deg, rgba(10,28,38,.96), rgba(5,16,23,.96));
+        border-radius: 10px;
+        padding: .9rem;
+        box-shadow: 0 12px 28px rgba(0,0,0,.25);
+    }
+
+    .web-card-label {
+        color: #9fb3bd;
+        font-size: .75rem;
+        text-transform: uppercase;
+        font-weight: 800;
+        letter-spacing: .06em;
+    }
+
+    .web-card-value {
+        color: #f8fbff;
+        font-size: 1.75rem;
+        font-weight: 950;
+        margin-top: .2rem;
+        line-height: 1.05;
+    }
+
+    .web-card-sub {
+        color: #86a4b2;
+        font-size: .75rem;
+        margin-top: .28rem;
+    }
+
+    .web-card.blue { border-color: rgba(47,140,255,.45); }
+    .web-card.red { border-color: rgba(239,68,68,.55); }
+    .web-card.amber { border-color: rgba(245,158,11,.55); }
+    .web-card.green { border-color: rgba(34,197,94,.55); }
+
+    .web-card.blue .web-card-value { color: #47a3ff; }
+    .web-card.red .web-card-value { color: #ff5c55; }
+    .web-card.amber .web-card-value { color: #ffb020; }
+    .web-card.green .web-card-value { color: #27e070; }
+
+    .web-section {
+        border: 1px solid #223946;
+        background: linear-gradient(180deg, rgba(7,20,28,.96), rgba(4,13,19,.96));
+        border-radius: 10px;
+        padding: .85rem;
+        margin-bottom: .75rem;
+        box-shadow: 0 10px 24px rgba(0,0,0,.24);
+    }
+
+    .web-section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: .75rem;
+        margin-bottom: .65rem;
+        border-bottom: 1px solid rgba(255,255,255,.06);
+        padding-bottom: .55rem;
+    }
+
+    .web-section-title {
+        color: #f8fbff;
+        font-size: 1rem;
+        font-weight: 930;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+    }
+
+    .web-section-caption {
+        color: #91a9b4;
+        font-size: .78rem;
+    }
+
+    .status-badge {
+        display: inline-block;
+        border-radius: 999px;
+        padding: .18rem .55rem;
+        font-size: .72rem;
+        font-weight: 850;
+        border: 1px solid rgba(255,255,255,.14);
+    }
+
+    .status-good { color: #27e070; background: rgba(34,197,94,.10); border-color: rgba(34,197,94,.35); }
+    .status-risk { color: #ffb020; background: rgba(245,158,11,.10); border-color: rgba(245,158,11,.35); }
+    .status-bad { color: #ff5c55; background: rgba(239,68,68,.10); border-color: rgba(239,68,68,.35); }
+
+    /* Make Streamlit tabs less like default tabs and more like a web nav bar. */
+    .stTabs [data-baseweb="tab-list"] {
+        position: sticky;
+        top: 74px;
+        z-index: 50;
+        border-radius: 8px !important;
+        box-shadow: 0 10px 24px rgba(0,0,0,.20);
+    }
+
+    /* Aggressive table polish */
+    [data-testid="stDataFrame"] div[role="grid"] {
+        background: #06131a !important;
+    }
+
+    /* Keep the app wide and hide excess Streamlit whitespace. */
+    .main .block-container {
+        padding-bottom: 2rem !important;
+    }
+
+    @media (max-width: 1200px) {
+        .webapp-layout { grid-template-columns: 1fr; }
+        .webapp-nav { position: relative; top: auto; min-height: auto; }
+        .web-grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .app-shell-topbar { grid-template-columns: 1fr; }
+        .app-classification { justify-self: start; }
+        .app-actions { justify-content: flex-start; }
+    }
+
+    @media (max-width: 700px) {
+        .web-grid-4 { grid-template-columns: 1fr; }
+    }
+
     </style>
     """, unsafe_allow_html=True)
 
@@ -3306,6 +3567,70 @@ def render_band_bar(sheet_names=None, active_sheet=None):
 
 
 
+
+def web_metric_cards(active_count, inactive_count, eq_conflicts, tech_conflicts, project_status):
+    """Render modern metric cards."""
+    status_class = "green" if str(project_status).lower() in ["approved", "active", "open", "working"] else "amber"
+    return f"""
+    <div class="web-grid-4">
+        <div class="web-card blue">
+            <div class="web-card-label">Active Allocations</div>
+            <div class="web-card-value">{int(active_count):,}</div>
+            <div class="web-card-sub">Rows included in planning</div>
+        </div>
+        <div class="web-card amber">
+            <div class="web-card-label">Inactive</div>
+            <div class="web-card-value">{int(inactive_count):,}</div>
+            <div class="web-card-sub">Hidden from analysis</div>
+        </div>
+        <div class="web-card red">
+            <div class="web-card-label">Equipment Conflicts</div>
+            <div class="web-card-value">{int(eq_conflicts):,}</div>
+            <div class="web-card-sub">Current selected sheet</div>
+        </div>
+        <div class="web-card {status_class}">
+            <div class="web-card-label">Project Status</div>
+            <div class="web-card-value">{project_status}</div>
+            <div class="web-card-sub">Workflow state</div>
+        </div>
+    </div>
+    """
+
+
+def app_topbar_html(project_name, user_name, project_status):
+    status = str(project_status or "Working")
+    badge_class = "status-good" if status.lower() in ["approved", "active", "open"] else ("status-risk" if status.lower() in ["working", "draft", "pending"] else "status-bad")
+    return f"""
+    <div class="app-shell-topbar">
+        <div class="app-brand">
+            <div class="app-logo">📡</div>
+            <div>
+                <div class="app-title-main">PCC6 SPECTRUM PLANNER</div>
+                <div class="app-title-sub">{project_name} · Collaborative frequency, power, geographic reuse, and time deconfliction</div>
+            </div>
+        </div>
+        <div class="app-classification">CONTROLLED UNCLASSIFIED INFORMATION (CUI)</div>
+        <div class="app-actions">
+            <span class="app-action-pill">User: {user_name}</span>
+            <span class="status-badge {badge_class}">{status}</span>
+        </div>
+    </div>
+    """
+
+
+def section_header_html(title, caption="", right=""):
+    return f"""
+    <div class="web-section-header">
+        <div>
+            <div class="web-section-title">{title}</div>
+            <div class="web-section-caption">{caption}</div>
+        </div>
+        <div>{right}</div>
+    </div>
+    """
+
+
+
 # ---------------- Plotting ----------------
 def style_axes(ax, dark=False):
     if dark:
@@ -3609,7 +3934,7 @@ can_edit = current_role in ["admin", "editor"]
 
 # ---------------- Sidebar ----------------
 with st.sidebar:
-    st.header("Workspace")
+    st.markdown("## Workspace")
     user_name = logged_in_user
     st.success(f"Logged in as: {user_name}")
     st.caption(f"Role: {current_role}")
@@ -4545,7 +4870,7 @@ except NameError:
 
 
 # ---------------- PCC6 Command Dashboard ----------------
-st.markdown("### PCC6 Command Dashboard")
+st.markdown(section_header_html("Dashboard", "Operational overview for allocation, deconfliction, reuse, and validation."), unsafe_allow_html=True)
 
 dash_total = len(df_ready) if "df_ready" in locals() else len(current_df)
 dash_eq_conf = len(conf_eq) if "conf_eq" in locals() and conf_eq is not None else 0
@@ -4661,6 +4986,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13
 ])
 
 with tab1:
+    st.markdown(section_header_html("Equipment Power", "Frequency allocation versus power by equipment."), unsafe_allow_html=True)
     fig = build_power_plot(df_ready, "Equipment", dark, alpha_val, tick_major, tick_minor, int(label_digits), pal_equipment, auto_thin, float(label_gap), high_power_top, power_style, float(outline_lwd), show_center_labels)
     st.pyplot(fig, use_container_width=True)
     st.download_button("Download PNG", fig_to_png_bytes(fig), "equipment_power.png", "image/png")
@@ -4724,6 +5050,7 @@ with tab6:
 
 
 with tab7:
+    st.markdown(section_header_html("Map View", "Mapped allocations, coverage circles, heat map, and export tools."), unsafe_allow_html=True)
     st.markdown("#### Map View")
     st.caption("Uses decimal-degree Latitude and Longitude columns. Coverage Radius draws circles using the selected units. Basemap uses free CARTO tiles; no Mapbox/Google token required.")
     deck, map_df = build_map_deck(
@@ -4793,6 +5120,7 @@ with tab7:
             st.dataframe(map_congestion_summary(map_df), use_container_width=True)
 
 with tab8:
+    st.markdown(section_header_html("Conflict Tables", "Equipment, tech, unit, and sponsor conflict records."), unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("#### Equipment conflicts")
@@ -4906,6 +5234,7 @@ with tab10:
 
 
 with tab11:
+    st.markdown(section_header_html("Smart Frequency Planner", "Recommended frequency moves and time-shift fallback actions."), unsafe_allow_html=True)
     st.markdown("#### Smart Frequency Planner")
     st.caption("Suggests alternate frequency ranges and time fallback actions using the current conflicts, planning band, guard band, and priority rules.")
 
