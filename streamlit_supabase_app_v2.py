@@ -365,6 +365,92 @@ def apply_pcc6_dark_ui():
         .pcc-two-col { grid-template-columns: 1fr; }
     }
 
+    
+    /* V45 real Streamlit command dashboard blocks */
+    .v45-panel {
+        border: 1px solid #263f4d;
+        background: linear-gradient(180deg, rgba(8,22,31,.98), rgba(5,15,22,.98));
+        border-radius: 8px;
+        padding: .85rem;
+        margin-bottom: .65rem;
+        box-shadow: 0 10px 24px rgba(0,0,0,.25);
+    }
+    .v45-panel-title {
+        font-size: 1.02rem;
+        font-weight: 900;
+        color: #f7fbff;
+        text-transform: uppercase;
+        letter-spacing: .035em;
+        margin-bottom: .35rem;
+    }
+    .v45-panel-caption {
+        color: #9fb3bd;
+        font-size: .78rem;
+        margin-bottom: .6rem;
+    }
+    .v45-filter-title {
+        color: #f7fbff;
+        font-size: 1rem;
+        font-weight: 900;
+        margin-bottom: .9rem;
+        text-transform: uppercase;
+    }
+    .v45-filter-box {
+        border: 1px solid #263f4d;
+        background: linear-gradient(180deg, #0b1a23, #07131a);
+        border-radius: 8px;
+        padding: .85rem;
+        min-height: 650px;
+    }
+    .v45-chip {
+        border: 1px solid #263f4d;
+        background: #081821;
+        border-radius: 4px;
+        padding: .6rem .7rem;
+        text-align: center;
+        color: #cbd8dd;
+        font-size: .8rem;
+    }
+    .v45-chip-active {
+        background: linear-gradient(180deg, #1f5fae, #124179);
+        color: #ffffff;
+        font-weight: 800;
+    }
+    .v45-metric-strip {
+        display: flex;
+        justify-content: flex-end;
+        gap: .5rem;
+        margin-bottom: .55rem;
+    }
+    .v45-metric {
+        border: 1px solid #235987;
+        border-radius: 5px;
+        background: rgba(12,35,51,.82);
+        min-width: 112px;
+        padding: .4rem .65rem;
+        text-align: center;
+    }
+    .v45-metric.red {
+        border-color: #a63a32;
+        background: rgba(80,20,20,.55);
+    }
+    .v45-metric.amber {
+        border-color: #b7791f;
+        background: rgba(70,45,10,.55);
+    }
+    .v45-metric-label {
+        color: #9fc0d0;
+        font-size: .68rem;
+    }
+    .v45-metric-value {
+        color: #2f9cff;
+        font-size: 1.35rem;
+        font-weight: 900;
+        line-height: 1.05;
+    }
+    .v45-metric.red .v45-metric-value { color: #ff554d; }
+    .v45-metric.amber .v45-metric-value { color: #ffb020; }
+
     </style>
     """, unsafe_allow_html=True)
 
@@ -4459,74 +4545,102 @@ except NameError:
 
 
 # ---------------- PCC6 Command Dashboard ----------------
-st.markdown('<div class="pcc-command-shell">', unsafe_allow_html=True)
-st.markdown('<div class="pcc-command-grid">', unsafe_allow_html=True)
+st.markdown("### PCC6 Command Dashboard")
 
-# Left visual filter panel - uses the same underlying app filters where possible.
-st.markdown("""
-<div class="pcc-filter-panel">
-    <div class="pcc-mini-title">FILTERS</div>
-    <div style="color:#9fb3bd;font-size:.82rem;margin-bottom:.65rem;">Use the sidebar controls for live filtering, visibility, import, and admin functions.</div>
-    <div style="border-top:1px solid #263f4d;margin:.75rem 0;"></div>
-    <div style="font-weight:800;margin-bottom:.45rem;">LEGEND</div>
-</div>
-""", unsafe_allow_html=True)
-
-st.markdown('</div>', unsafe_allow_html=True)
-
-# Real dashboard content.
 dash_total = len(df_ready) if "df_ready" in locals() else len(current_df)
 dash_eq_conf = len(conf_eq) if "conf_eq" in locals() and conf_eq is not None else 0
 dash_ut_conf = len(conf_ut) if "conf_ut" in locals() and conf_ut is not None else 0
-dash_risk = dash_eq_conf + dash_ut_conf
 
-st.markdown('<div class="pcc-chart-panel">', unsafe_allow_html=True)
-st.markdown('<div class="pcc-mini-title">TIME × FREQUENCY — BY TECH <span class="info-dot">ⓘ</span></div>', unsafe_allow_html=True)
-try:
-    fig_dash = build_deconflict_plot(plot_df_conf, "Tech", pal_unittech, True, tick_major, tick_minor, True, box_label_min_height_min, False, moved_outline, conf_ut)
-    st.pyplot(fig_dash, use_container_width=True)
-except Exception as e:
-    st.info(f"Dashboard chart could not be rendered yet: {e}")
-st.markdown('</div>', unsafe_allow_html=True)
+left_col, main_col = st.columns([1.15, 7.85], gap="small")
 
-st.markdown('<div class="pcc-two-col">', unsafe_allow_html=True)
+with left_col:
+    st.markdown('<div class="v45-filter-box"><div class="v45-filter-title">Filters</div>', unsafe_allow_html=True)
+    st.caption("Main filters are controlled in the sidebar. This panel mirrors the mockup layout.")
+    st.markdown("**Band**")
+    st.code(st.session_state.get("active_sheet_name", "Active band"), language=None)
+    st.markdown("**Date**")
+    st.code("Current project", language=None)
+    st.markdown("**Legend**")
+    try:
+        legend_items = list(pal_unittech.keys())[:12]
+        for item in legend_items:
+            st.markdown(f"• {item}")
+        st.caption(f"Total Tech Types: {len(pal_unittech)}")
+    except Exception:
+        st.caption("Legend unavailable until data is loaded.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-st.markdown('<div class="pcc-table-panel">', unsafe_allow_html=True)
-st.markdown('<div class="pcc-mini-title">DECONFLICTION BY UNIT <span class="info-dot">ⓘ</span></div>', unsafe_allow_html=True)
-st.markdown(render_metric_html(dash_total, dash_eq_conf, max(0, int(dash_eq_conf / 2))), unsafe_allow_html=True)
-try:
-    conf_unit_dash = detect_conflicts_generic(plot_df_conf.assign(Unit=plot_df_conf.get("Unit", "(blank)").fillna("(blank)")), "Unit", guard)
-    unit_dash = command_dashboard_group_summary(df_ready, "Unit", conf_unit_dash)
-    st.dataframe(unit_dash, use_container_width=True, hide_index=True)
-except Exception as e:
-    st.info(f"Unit dashboard not available yet: {e}")
-st.markdown('</div>', unsafe_allow_html=True)
+with main_col:
+    st.markdown('<div class="v45-panel"><div class="v45-panel-title">Time × Frequency — By Tech ⓘ</div><div class="v45-panel-caption">Frequency values inside boxes. Names stay in legend.</div>', unsafe_allow_html=True)
+    try:
+        fig_dash = build_deconflict_plot(
+            plot_df_conf,
+            "Tech",
+            pal_unittech,
+            True,
+            tick_major,
+            tick_minor,
+            True,
+            box_label_min_height_min,
+            False,
+            moved_outline,
+            conf_ut,
+        )
+        st.pyplot(fig_dash, use_container_width=True)
+    except Exception as e:
+        st.info(f"Dashboard chart could not be rendered yet: {e}")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-st.markdown('<div class="pcc-table-panel">', unsafe_allow_html=True)
-st.markdown('<div class="pcc-mini-title">DECONFLICTION BY SPONSOR <span class="info-dot">ⓘ</span></div>', unsafe_allow_html=True)
-st.markdown(render_metric_html(dash_total, dash_ut_conf, max(0, int(dash_ut_conf / 2))), unsafe_allow_html=True)
-try:
-    sponsor_col_dash = "Sponsor" if "Sponsor" in plot_df_conf.columns else ("Sponser" if "Sponser" in plot_df_conf.columns else None)
-    if sponsor_col_dash:
-        sponsor_df_dash = plot_df_conf.copy()
-        sponsor_df_dash[sponsor_col_dash] = sponsor_df_dash[sponsor_col_dash].fillna("(blank)").replace({"": "(blank)", "None": "(blank)", "nan": "(blank)"})
-        conf_sponsor_dash = detect_conflicts_generic(sponsor_df_dash, sponsor_col_dash, guard)
-        sponsor_dash = command_dashboard_group_summary(df_ready, sponsor_col_dash, conf_sponsor_dash)
-        st.dataframe(sponsor_dash, use_container_width=True, hide_index=True)
-    else:
-        st.info("No Sponsor column found.")
-except Exception as e:
-    st.info(f"Sponsor dashboard not available yet: {e}")
-st.markdown('</div>', unsafe_allow_html=True)
+    unit_panel, sponsor_panel = st.columns(2, gap="small")
 
-st.markdown('</div>', unsafe_allow_html=True)
+    with unit_panel:
+        st.markdown('<div class="v45-panel"><div class="v45-panel-title">Deconfliction by Unit ⓘ</div>', unsafe_allow_html=True)
+        st.markdown(
+            render_metric_html(dash_total, dash_eq_conf, max(0, int(dash_eq_conf / 2))),
+            unsafe_allow_html=True,
+        )
+        try:
+            unit_df_dash = plot_df_conf.copy()
+            if "Unit" not in unit_df_dash.columns:
+                unit_df_dash["Unit"] = "(blank)"
+            unit_df_dash["Unit"] = unit_df_dash["Unit"].fillna("(blank)").replace({"": "(blank)", "None": "(blank)", "nan": "(blank)"})
+            conf_unit_dash = detect_conflicts_generic(unit_df_dash, "Unit", guard)
+            st.dataframe(command_dashboard_group_summary(df_ready, "Unit", conf_unit_dash), use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.info(f"Unit dashboard not available yet: {e}")
+        st.markdown("</div>", unsafe_allow_html=True)
 
-try:
-    st.markdown(render_band_bar(list(st.session_state.get("workbook_sheets", {}).keys()), st.session_state.get("active_sheet_name")), unsafe_allow_html=True)
-except Exception:
-    st.markdown(render_band_bar(), unsafe_allow_html=True)
+    with sponsor_panel:
+        st.markdown('<div class="v45-panel"><div class="v45-panel-title">Deconfliction by Sponsor ⓘ</div>', unsafe_allow_html=True)
+        st.markdown(
+            render_metric_html(dash_total, dash_ut_conf, max(0, int(dash_ut_conf / 2))),
+            unsafe_allow_html=True,
+        )
+        try:
+            sponsor_col_dash = "Sponsor" if "Sponsor" in plot_df_conf.columns else ("Sponser" if "Sponser" in plot_df_conf.columns else None)
+            if sponsor_col_dash:
+                sponsor_df_dash = plot_df_conf.copy()
+                sponsor_df_dash[sponsor_col_dash] = sponsor_df_dash[sponsor_col_dash].fillna("(blank)").replace({"": "(blank)", "None": "(blank)", "nan": "(blank)"})
+                conf_sponsor_dash = detect_conflicts_generic(sponsor_df_dash, sponsor_col_dash, guard)
+                st.dataframe(command_dashboard_group_summary(df_ready, sponsor_col_dash, conf_sponsor_dash), use_container_width=True, hide_index=True)
+            else:
+                st.info("No Sponsor column found.")
+        except Exception as e:
+            st.info(f"Sponsor dashboard not available yet: {e}")
+        st.markdown("</div>", unsafe_allow_html=True)
 
-st.markdown('</div>', unsafe_allow_html=True)
+    try:
+        band_names = list(st.session_state.get("workbook_sheets", {}).keys())
+        if not band_names:
+            band_names = ["1350-1390", "1780-1850", "2025-2110", "2200-2300", "2310-2360", "2400-2490", "4400-4648.6", "4648.6-4940", "9200-10000", "14400-14830", "15150-15350", "15700-17700"]
+        band_cols = st.columns(min(len(band_names), 12))
+        active_band = st.session_state.get("active_sheet_name")
+        for i, b in enumerate(band_names[:12]):
+            css_class = "v45-chip v45-chip-active" if str(b) == str(active_band) or (active_band is None and i == 0) else "v45-chip"
+            band_cols[i].markdown(f'<div class="{css_class}">{b}</div>', unsafe_allow_html=True)
+    except Exception:
+        pass
+
 st.markdown("---")
 
 
