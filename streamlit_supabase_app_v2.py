@@ -1,48 +1,3 @@
-# streamlit_supabase_app_v2.py
-# Spectrum Planner — Streamlit + Supabase
-# JSON-backed, polished, and safer deconfliction.
-# Fixes:
-# - Avoids Supabase column mismatch by saving allocation rows in row_data JSONB.
-# - Power plot center-frequency labels are near the top inside boxes.
-# - Deconfliction labels are inside boxes.
-# - Improved scheduler only separates rows that actually overlap in frequency.
-# - Uses Supabase Auth login/signup instead of one shared password.
-# - Adds admin user management with roles: admin, editor, viewer, disabled.
-# - Adds legends to every plot tab.
-# - Keeps uploaded preview data in session state until saved.
-# - Cleans Excel/Pandas values before saving versions to Supabase JSON.
-# - Adds Map View tab using Latitude/Longitude and optional coverage circles.
-# - Adds stronger thin black outlines to separate overlapping visual bands.
-# - Saves original uploaded CSV/XLSX files to Supabase Storage for download after logout/login.
-# - Adds admin-only buttons to delete version history and clear the shared allocation table.
-# - Saves/restores all Excel workbook sheets as project tabs.
-# - Adds download buttons for map HTML and map data CSV.
-# - Restores admin-only buttons to delete version history and clear shared allocation table.
-# - Fixes Auto Deconflict Anchor so changing the anchor time repacks the schedule.
-# - Shows workbook-tab persistence status and saves all tabs permanently to Supabase.
-# - Fixes NaN/Inf JSON errors when saving workbook sheets.
-# - Adds admin-only project deletion for old projects.
-# - Adds approval workflow, audit trail, and PDF briefing export.
-# - Fixes missing map HTML download helper.
-# - Adds project-level member permissions so admins control who can access each project.
-# - Adds KML export for map points/coverage and richer GIS-ready site popups.
-# - Adds live collaboration dashboard: online users, activity feed, and optional auto-refresh.
-# - Adds map heatmap/congestion layer for dense or overlapping spectrum activity.
-# - Adds conflict severity scoring, recommended actions, and CSV export.
-# - Adds mission templates so users can save/reuse standard workbook setups.
-# - Adds GeoJSON export for GIS/web map workflows.
-# - Adds terrain/range planning: distance, RF horizon estimate, and site-to-site LOS screening.
-# - Adds full project backup/restore JSON export for admins.
-# - Adds smart frequency planning with alternate frequency/time-shift recommendations.
-# - Adds Apply Smart Plan workflow to update workbook rows from selected recommendations.
-# - Adds row-level edit history, project dashboard, MGRS/USNG support, and smart import cleanup.
-# - Fixes mission template project_id NameError in sidebar.
-# - Fixes missing json import for project backup export.
-# - Adds local json import fallback and recursive backup JSON sanitizer.
-# - Restores missing conflict_summary function for Conflict Tables tab.
-# - Restores missing conflict recommendation helper functions.
-# - Restores missing Smart Planner helper functions.
-
 import io
 import json
 import math
@@ -68,6 +23,233 @@ from matplotlib.backends.backend_pdf import PdfPages
 from supabase import create_client
 
 st.set_page_config(page_title="Spectrum Planner", page_icon="📡", layout="wide", initial_sidebar_state="expanded")
+
+
+def apply_pcc6_dark_ui():
+    """Apply PCC6 command-dashboard style UI."""
+    st.markdown("""
+    <style>
+    :root {
+        --pcc-bg: #071116;
+        --pcc-panel: #0b1820;
+        --pcc-panel-2: #101f29;
+        --pcc-border: #233743;
+        --pcc-text: #e8f2f5;
+        --pcc-muted: #a8bbc2;
+        --pcc-blue: #1f5fae;
+        --pcc-blue-2: #2f8cff;
+        --pcc-green: #22c55e;
+        --pcc-red: #ef4444;
+        --pcc-amber: #f59e0b;
+    }
+
+    html, body, [data-testid="stAppViewContainer"], .stApp {
+        background:
+            radial-gradient(circle at 20% 0%, rgba(47,140,255,.10), transparent 28%),
+            radial-gradient(circle at 90% 10%, rgba(34,197,94,.07), transparent 26%),
+            linear-gradient(180deg, #061015 0%, #08131a 45%, #05090d 100%) !important;
+        color: var(--pcc-text) !important;
+    }
+
+    [data-testid="stHeader"] {
+        background: rgba(5, 11, 15, .80) !important;
+        border-bottom: 1px solid rgba(255,255,255,.06);
+    }
+
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #071016 0%, #081821 100%) !important;
+        border-right: 1px solid var(--pcc-border);
+    }
+
+    [data-testid="stSidebar"] * {
+        color: var(--pcc-text) !important;
+    }
+
+    .block-container {
+        padding-top: 1.1rem !important;
+        padding-left: 1.2rem !important;
+        padding-right: 1.2rem !important;
+        max-width: 100% !important;
+    }
+
+    h1, h2, h3, h4 {
+        color: var(--pcc-text) !important;
+        letter-spacing: .02em;
+    }
+
+    h1 {
+        font-size: 2.25rem !important;
+        font-weight: 800 !important;
+        margin-bottom: .1rem !important;
+    }
+
+    .pcc-title-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: .85rem 1rem;
+        margin-bottom: .75rem;
+        background: linear-gradient(90deg, rgba(9,22,29,.90), rgba(14,31,40,.66));
+        border: 1px solid var(--pcc-border);
+        border-radius: 10px;
+        box-shadow: 0 10px 30px rgba(0,0,0,.28);
+    }
+
+    .pcc-title {
+        font-size: 1.85rem;
+        font-weight: 900;
+        color: #f8fbfc;
+        line-height: 1.1;
+    }
+
+    .pcc-subtitle {
+        color: var(--pcc-muted);
+        font-size: .86rem;
+        margin-top: .25rem;
+    }
+
+    .pcc-cui {
+        color: #55ff55;
+        font-weight: 800;
+        font-size: .82rem;
+        border: 1px solid rgba(85,255,85,.35);
+        background: rgba(34,197,94,.08);
+        border-radius: 999px;
+        padding: .35rem .65rem;
+        white-space: nowrap;
+    }
+
+    div[data-testid="stMetric"] {
+        background: linear-gradient(180deg, rgba(15,34,45,.95), rgba(8,20,27,.98));
+        border: 1px solid var(--pcc-border);
+        border-radius: 10px;
+        padding: .65rem .85rem;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.035), 0 8px 22px rgba(0,0,0,.22);
+    }
+
+    div[data-testid="stMetric"] label {
+        color: var(--pcc-muted) !important;
+        font-size: .78rem !important;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: #ffffff !important;
+        font-weight: 800 !important;
+    }
+
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0 !important;
+        background: rgba(6,15,21,.82);
+        border: 1px solid var(--pcc-border);
+        border-radius: 8px;
+        padding: 0 !important;
+        overflow-x: auto;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        height: 42px;
+        color: var(--pcc-muted) !important;
+        background: rgba(9,18,24,.85);
+        border-right: 1px solid var(--pcc-border);
+        padding: 0 .85rem !important;
+        font-size: .78rem;
+        font-weight: 700;
+        text-transform: uppercase;
+    }
+
+    .stTabs [aria-selected="true"] {
+        color: #ffffff !important;
+        background: linear-gradient(180deg, #1f5fae, #174779) !important;
+        border-bottom: 2px solid #5db5ff !important;
+    }
+
+    div[data-testid="stExpander"] {
+        background: linear-gradient(180deg, rgba(12,27,36,.88), rgba(8,18,25,.88));
+        border: 1px solid var(--pcc-border) !important;
+        border-radius: 10px !important;
+        overflow: hidden;
+        box-shadow: 0 8px 24px rgba(0,0,0,.22);
+    }
+
+    div[data-testid="stExpander"] summary {
+        color: var(--pcc-text) !important;
+        font-weight: 800 !important;
+    }
+
+    .stButton > button, .stDownloadButton > button, button[kind="primary"] {
+        border-radius: 7px !important;
+        border: 1px solid #2d6bb6 !important;
+        background: linear-gradient(180deg, #1f5fae, #174a85) !important;
+        color: white !important;
+        font-weight: 700 !important;
+    }
+
+    .stButton > button:hover, .stDownloadButton > button:hover {
+        border-color: #6bb7ff !important;
+        box-shadow: 0 0 0 2px rgba(47,140,255,.18);
+    }
+
+    input, textarea, [data-baseweb="select"] > div {
+        background: #091720 !important;
+        color: var(--pcc-text) !important;
+        border-color: var(--pcc-border) !important;
+    }
+
+    [data-testid="stDataFrame"], [data-testid="stTable"] {
+        border: 1px solid var(--pcc-border);
+        border-radius: 10px;
+        overflow: hidden;
+        background: rgba(8,20,27,.88);
+    }
+
+    .stAlert {
+        background: rgba(20,34,42,.92) !important;
+        border: 1px solid var(--pcc-border) !important;
+        color: var(--pcc-text) !important;
+    }
+
+    hr {
+        border-color: var(--pcc-border) !important;
+    }
+
+    .pcc-panel {
+        background: linear-gradient(180deg, rgba(12,27,36,.96), rgba(7,18,25,.96));
+        border: 1px solid var(--pcc-border);
+        border-radius: 10px;
+        padding: .85rem 1rem;
+        margin: .55rem 0 .75rem 0;
+        box-shadow: 0 12px 28px rgba(0,0,0,.24);
+    }
+
+    .pcc-panel-title {
+        font-weight: 900;
+        color: #f9fbfc;
+        text-transform: uppercase;
+        font-size: .95rem;
+        letter-spacing: .04em;
+        margin-bottom: .25rem;
+    }
+
+    .pcc-panel-caption {
+        color: var(--pcc-muted);
+        font-size: .82rem;
+    }
+
+    .pcc-status-good { color: var(--pcc-green); font-weight: 800; }
+    .pcc-status-risk { color: var(--pcc-amber); font-weight: 800; }
+    .pcc-status-bad { color: var(--pcc-red); font-weight: 800; }
+
+    @media (max-width: 900px) {
+        .pcc-title-row { flex-direction: column; align-items: flex-start; }
+        .pcc-title { font-size: 1.35rem; }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
 st.markdown("""
 <style>
 .block-container {padding-top: 1rem; padding-bottom: 2rem;}
@@ -76,7 +258,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📡 Spectrum Planner")
+st.markdown("""<div class="pcc-title-row"><div><div class="pcc-title">📡 PCC6 SPECTRUM PLANNER</div><div class="pcc-subtitle">Collaborative frequency, power, geographic reuse, and time deconfliction workspace</div></div><div class="pcc-cui">CONTROLLED UNCLASSIFIED INFORMATION (CUI)</div></div>""", unsafe_allow_html=True)
 st.caption("Collaborative frequency, power, and time deconfliction workspace")
 
 STORAGE_BUCKET = "spectrum-files"
@@ -105,7 +287,7 @@ APP_COLUMNS = [
     "Power (W)", "Power (dBm)", "Tech", "Unit", "Notes",
     "Latitude", "Longitude", "Location",
     "Antenna Height", "Coverage Radius", "Site Name",
-    "MGRS", "USNG",
+    "MGRS", "USNG", "Active",
 ]
 
 STANDARD_RENAME = {
@@ -180,6 +362,11 @@ STANDARD_RENAME = {
     "USNG": "USNG",
     "Grid": "MGRS",
     "Military Grid": "MGRS",
+    "Active": "Active",
+    "Enabled": "Active",
+    "In Use": "Active",
+    "Use": "Active",
+    "Include": "Active",
 }
 
 INTERNAL_RENAME = {
@@ -203,6 +390,7 @@ INTERNAL_RENAME = {
     "Site Name": "SiteName",
     "MGRS": "MGRS",
     "USNG": "USNG",
+    "Active": "Active",
 }
 
 def now_iso():
@@ -591,6 +779,11 @@ SMART_COLUMN_ALIASES = {
     "usng": "USNG",
     "grid": "MGRS",
     "militarygrid": "MGRS",
+    "active": "Active",
+    "enabled": "Active",
+    "inuse": "Active",
+    "use": "Active",
+    "include": "Active",
 }
 
 
@@ -650,6 +843,33 @@ def fill_latlon_from_mgrs(df):
                 out.at[idx, "Longitude"] = lon
 
     return out
+
+
+
+
+def to_active_bool(value):
+    """Convert common spreadsheet active/inactive values to bool."""
+    if pd.isna(value):
+        return True
+    s = str(value).strip().lower()
+    if s in ["false", "no", "n", "0", "off", "inactive", "disabled", "unused", "not used", "exclude"]:
+        return False
+    return True
+
+
+def active_label(value):
+    return "Active" if to_active_bool(value) else "Inactive"
+
+
+def apply_active_filter(df, show_inactive=False):
+    """Return only active rows unless show_inactive is enabled."""
+    if df is None or df.empty:
+        return df
+    if "Active" not in df.columns:
+        return df.copy()
+    if show_inactive:
+        return df.copy()
+    return df[df["Active"].apply(to_active_bool)].copy()
 
 
 
@@ -718,6 +938,9 @@ def normalize_uploaded_df(df):
     for c in APP_COLUMNS:
         if c not in out.columns:
             out[c] = None
+
+    if "Active" in out.columns:
+        out["Active"] = out["Active"].apply(lambda v: True if pd.isna(v) else to_active_bool(v))
 
     return out[APP_COLUMNS].reset_index(drop=True)
 
@@ -2663,6 +2886,154 @@ def combined_smart_plan(df, conf_eq, conf_ut, grp_ut, band_start, band_end, guar
 
 
 
+
+def summary_by_group(df, group_col, conf_df=None):
+    """Aggregate allocations, conflicts, power, bandwidth by a group."""
+    if df is None or df.empty or group_col not in df.columns:
+        return pd.DataFrame({"Message": [f"No {group_col} data found."]})
+
+    d = df.copy()
+    d[group_col] = d[group_col].fillna("(blank)").astype(str)
+    d["BandwidthCalc"] = pd.to_numeric(d.get("EndF"), errors="coerce") - pd.to_numeric(d.get("StartF"), errors="coerce")
+    d["PowerCalc"] = pd.to_numeric(d.get("PowerW"), errors="coerce").fillna(0)
+
+    out = d.groupby(group_col, dropna=False).agg(
+        Allocations=("Equipment", "count"),
+        UniqueFreqs=("CenterF", lambda x: pd.to_numeric(x, errors="coerce").dropna().nunique()),
+        TotalBandwidthMHz=("BandwidthCalc", "sum"),
+        AvgPowerW=("PowerCalc", "mean"),
+        MaxPowerW=("PowerCalc", "max"),
+    ).reset_index()
+
+    out["Conflicts"] = 0
+    if conf_df is not None and not conf_df.empty:
+        conflict_counts = {}
+        for _, r in conf_df.iterrows():
+            for g in [str(r.get("GroupA", "")), str(r.get("GroupB", ""))]:
+                conflict_counts[g] = conflict_counts.get(g, 0) + 1
+        out["Conflicts"] = out[group_col].map(conflict_counts).fillna(0).astype(int)
+
+    out["At Risk"] = np.where(out["Conflicts"] > 0, "At Risk", "Good")
+    out["TotalBandwidthMHz"] = pd.to_numeric(out["TotalBandwidthMHz"], errors="coerce").round(3)
+    out["AvgPowerW"] = pd.to_numeric(out["AvgPowerW"], errors="coerce").round(3)
+    out["MaxPowerW"] = pd.to_numeric(out["MaxPowerW"], errors="coerce").round(3)
+    return out.sort_values(["Conflicts", "Allocations"], ascending=[False, False]).reset_index(drop=True)
+
+
+def band_utilization_summary(df):
+    """Summarize allocation usage by workbook/band tab or frequency span."""
+    if df is None or df.empty:
+        return pd.DataFrame({"Message": ["No allocation data."]})
+
+    d = df.copy()
+    if "SourceSheet" in d.columns:
+        group = "SourceSheet"
+    elif "RequestSheet" in d.columns:
+        group = "RequestSheet"
+    else:
+        # Fallback: create rough 100 MHz bins.
+        sf = pd.to_numeric(d.get("StartF"), errors="coerce")
+        d["Band"] = (np.floor(sf / 100) * 100).astype("Int64").astype(str) + "-" + (np.floor(sf / 100) * 100 + 100).astype("Int64").astype(str)
+        group = "Band"
+
+    d["StartFNum"] = pd.to_numeric(d.get("StartF"), errors="coerce")
+    d["EndFNum"] = pd.to_numeric(d.get("EndF"), errors="coerce")
+    d["BWNum"] = d["EndFNum"] - d["StartFNum"]
+
+    out = d.groupby(group, dropna=False).agg(
+        Allocations=("Equipment", "count"),
+        MinMHz=("StartFNum", "min"),
+        MaxMHz=("EndFNum", "max"),
+        UsedBandwidthMHz=("BWNum", "sum"),
+        UniqueFreqs=("CenterF", lambda x: pd.to_numeric(x, errors="coerce").dropna().nunique()),
+    ).reset_index().rename(columns={group: "Band"})
+
+    out["BandSpanMHz"] = (out["MaxMHz"] - out["MinMHz"]).round(3)
+    out["UsedBandwidthMHz"] = out["UsedBandwidthMHz"].round(3)
+    out["ApproxUtilizationPct"] = np.where(out["BandSpanMHz"] > 0, (out["UsedBandwidthMHz"] / out["BandSpanMHz"] * 100).clip(0, 999).round(1), 0)
+    return out.sort_values("Allocations", ascending=False).reset_index(drop=True)
+
+
+def allocation_validation_summary(df):
+    """Find low confidence/missing metadata rows."""
+    if df is None or df.empty:
+        return pd.DataFrame({"Message": ["No allocation data."]})
+
+    d = df.copy()
+    issues = []
+
+    for idx, r in d.iterrows():
+        row_issues = []
+        conf = pd.to_numeric(r.get("Match Confidence"), errors="coerce")
+        if pd.notna(conf) and conf < 90:
+            row_issues.append(f"Low match confidence: {conf}%")
+        for col in ["Unit", "Sponsor", "Sponser", "Tech"]:
+            if col in d.columns and (pd.isna(r.get(col)) or str(r.get(col)).strip() in ["", "None", "nan", "(blank)"]):
+                row_issues.append(f"Missing {col}")
+        if "Active" in d.columns and not to_active_bool(r.get("Active")):
+            row_issues.append("Inactive / turned off")
+        if row_issues:
+            issues.append({
+                "Row": idx,
+                "Equipment": r.get("Equipment", ""),
+                "Tech": r.get("Tech", ""),
+                "Unit": r.get("Unit", ""),
+                "Sponsor": r.get("Sponsor", r.get("Sponser", "")),
+                "Match Confidence": r.get("Match Confidence", ""),
+                "Issues": "; ".join(row_issues),
+            })
+
+    if not issues:
+        return pd.DataFrame({"Message": ["No validation issues found."]})
+    return pd.DataFrame(issues)
+
+
+def geographic_reuse_summary(df):
+    """Approximate geographic reuse opportunities by frequency and distance."""
+    if df is None or df.empty:
+        return pd.DataFrame({"Message": ["No allocation data."]})
+
+    d = df.copy()
+    d["Latitude"] = pd.to_numeric(d.get("Latitude"), errors="coerce")
+    d["Longitude"] = pd.to_numeric(d.get("Longitude"), errors="coerce")
+    d["CenterF"] = pd.to_numeric(d.get("CenterF"), errors="coerce")
+    d = d.dropna(subset=["Latitude", "Longitude", "CenterF"])
+
+    if len(d) < 2:
+        return pd.DataFrame({"Message": ["Need at least two mapped allocations with CenterF for reuse analysis."]})
+
+    rows = []
+    for freq, g in d.groupby("CenterF"):
+        g = g.reset_index(drop=True)
+        if len(g) < 2:
+            continue
+        for i in range(len(g)):
+            for j in range(i + 1, len(g)):
+                a, b = g.iloc[i], g.iloc[j]
+                dist_km = haversine_distance_km(a["Latitude"], a["Longitude"], b["Latitude"], b["Longitude"])
+                rad_a = pd.to_numeric(str(a.get("CoverageRadius", "0")).replace("km","").replace("KM","").replace("NM","").replace("nm","").strip(), errors="coerce")
+                rad_b = pd.to_numeric(str(b.get("CoverageRadius", "0")).replace("km","").replace("KM","").replace("NM","").replace("nm","").strip(), errors="coerce")
+                rad_a = 0 if pd.isna(rad_a) else float(rad_a)
+                rad_b = 0 if pd.isna(rad_b) else float(rad_b)
+                # Treat radius values as km for this summary when the file uses 10km style.
+                overlap_margin = (rad_a + rad_b) - dist_km
+                rows.append({
+                    "Center Frequency (MHz)": round(float(freq), 3),
+                    "Site A": a.get("SiteName", a.get("Location", a.get("Equipment", ""))),
+                    "Site B": b.get("SiteName", b.get("Location", b.get("Equipment", ""))),
+                    "Unit A": a.get("Unit", ""),
+                    "Unit B": b.get("Unit", ""),
+                    "Distance km": round(dist_km, 2),
+                    "Combined Radius": round(rad_a + rad_b, 2),
+                    "Overlap Margin km": round(overlap_margin, 2),
+                    "Reuse Risk": "High" if overlap_margin > 0 else "Low",
+                })
+
+    if not rows:
+        return pd.DataFrame({"Message": ["No reused center frequencies found across mapped sites."]})
+    return pd.DataFrame(rows).sort_values(["Reuse Risk", "Distance km"], ascending=[False, True]).reset_index(drop=True)
+
+
 # ---------------- Plotting ----------------
 def style_axes(ax, dark=False):
     if dark:
@@ -2923,12 +3294,22 @@ def build_deconflict_plot(d0, grp_field, palette, dark, tick_major, tick_minor, 
         col = palette.get(str(row["Group"]), "#1f77b4")
         x0, w = row["StartF"], row["EndF"]-row["StartF"]
         y0, h = row["StartSec"]/3600, (row["EndSecUnwrapped"]-row["StartSec"])/3600
-        ax.add_patch(Rectangle((x0,y0), w,h, facecolor=col, edgecolor="black", alpha=.6, linewidth=0.8))
+        ax.add_patch(Rectangle((x0,y0), w,h, facecolor=col, edgecolor="black", alpha=.95, linewidth=0.8))
         if moved_outline_thickness > 0 and bool(row["Moved"]):
             ax.add_patch(Rectangle((x0,y0), w,h, facecolor="none", edgecolor="black", linewidth=moved_outline_thickness))
         if show_box_labels and row["BoxHeightMin"] >= float(min_label_height_min):
-            label = str(row["Group"]); label = label if len(label) <= 24 else label[:21] + "..."
-            ax.text(x0+w/2, y0+h/2, label, ha="center", va="center", fontsize=8, fontweight="bold", color=("white" if dark else "black"), clip_on=True)
+            # V40: only show frequency/range inside boxes. Equipment/Tech/Unit/Sponsor names stay in the legend.
+            center_f = pd.to_numeric(row.get("CenterF"), errors="coerce")
+            start_f = pd.to_numeric(row.get("StartF"), errors="coerce")
+            end_f = pd.to_numeric(row.get("EndF"), errors="coerce")
+            if np.isfinite(center_f):
+                label = f"{center_f:.3f} MHz"
+            elif np.isfinite(start_f) and np.isfinite(end_f):
+                label = f"{start_f:.3f}-{end_f:.3f} MHz"
+            else:
+                label = ""
+            if label:
+                ax.text(x0+w/2, y0+h/2, label, ha="center", va="center", fontsize=8, fontweight="bold", color=("white" if dark else "black"), clip_on=True)
         if show_shift_label and "ShiftSec" in d.columns and row["BoxHeightMin"] >= float(min_label_height_min):
             shift = row.get("ShiftSec", np.nan)
             if pd.notna(shift) and abs(shift) > 0:
@@ -3064,11 +3445,15 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Could not delete project: {e}")
 
+    st.divider(); st.header("Frequency visibility")
+    show_inactive_rows = st.checkbox("Show inactive frequencies", value=False)
+    inactive_action_mode = st.radio("Inactive row action", ["Hide from planning", "Show gray reference"], index=0)
+
     st.divider(); st.header("Plot controls")
-    dark = st.checkbox("Dark theme", value=False)
+    dark = st.checkbox("Dark theme", value=True)
     power_style = st.selectbox("Power plot style", ["outline_fill", "filled", "outline"], index=0, format_func=lambda x: {"outline_fill":"Outline + light fill", "filled":"Filled bands", "outline":"Outline only"}[x])
-    alpha_val = st.slider("Fill transparency", 0.0, 1.0, 0.45, 0.05)
-    high_power_top = st.checkbox("Draw HIGH power on top", value=True)
+    alpha_val = st.slider("Fill transparency", 0.0, 1.0, 0.95, 0.05)
+    high_power_top = st.checkbox("Draw HIGH power on top", value=False)
     outline_lwd = st.slider("Outline thickness", 0.2, 2.0, 0.6, 0.1)
     auto_thin = st.checkbox("Auto thin center-frequency labels", value=False)
     show_center_labels = st.checkbox("Show center-frequency labels inside boxes", value=True)
@@ -3151,6 +3536,8 @@ if auto_refresh:
     )
 
 current_df = get_project_rows(project_id)
+current_df_all = current_df.copy()
+current_df = apply_active_filter(current_df, show_inactive_rows)
 
 # Restore saved workbook sheets. If there are no saved sheets yet, use the shared allocation table as a single Working sheet.
 saved_sheets = load_project_sheets(project_id)
@@ -3180,7 +3567,9 @@ if _saved_sheet_count == 0 and len(st.session_state.get("workbook_sheets", {})) 
     st.warning("Workbook tabs are visible in this session, but they have not been confirmed saved in Supabase yet. Click Save shared changes, or run the v17 SQL setup if saving fails.")
 
 cols = st.columns(4)
-cols[0].metric("Rows", len(current_df)); cols[1].metric("Project", project_name); cols[2].metric("Status", project_status); cols[3].metric("User", user_name)
+active_count = len(apply_active_filter(current_df_all, False)) if "Active" in current_df_all.columns else len(current_df_all)
+inactive_count = len(current_df_all) - active_count if "Active" in current_df_all.columns else 0
+cols[0].metric("Active Rows", active_count); cols[1].metric("Inactive", inactive_count); cols[2].metric("Status", project_status); cols[3].metric("User", user_name)
 if st.button("Refresh latest project data", use_container_width=True):
     log_audit_event(project_id, "manual_refresh", logged_in_user, {})
     st.rerun()
@@ -3189,7 +3578,7 @@ with st.expander("Project dashboard", expanded=False):
     st.caption("At-a-glance project health, collaboration, and data status.")
 
     dash_cols = st.columns(5)
-    dash_cols[0].metric("Rows", len(current_df))
+    dash_cols[0].metric("Active Rows", active_count)
     dash_cols[1].metric("Workbook tabs", len(st.session_state.get("workbook_sheets", {})))
     dash_cols[2].metric("Status", project_status)
     try:
@@ -3556,6 +3945,71 @@ with st.expander("Row-level edit history", expanded=False):
                     st.error(f"Could not restore row: {e}")
 
 
+
+with st.expander("Active / inactive frequency control", expanded=False):
+    st.caption("Turn off frequencies you are not using. Inactive rows remain saved but are excluded from plots, conflicts, smart planner, maps, and dashboards unless 'Show inactive frequencies' is enabled.")
+
+    active_source_df = current_df_all.copy()
+    if active_source_df.empty:
+        st.info("No rows available.")
+    else:
+        if "Active" not in active_source_df.columns:
+            active_source_df["Active"] = True
+
+        active_source_df["Active"] = active_source_df["Active"].apply(to_active_bool)
+        active_source_df["Status"] = active_source_df["Active"].apply(lambda x: "Active" if x else "Inactive")
+
+        display_cols = [c for c in ["Active", "Status", "Equipment", "Tech", "Unit", "Sponsor", "Sponser", "Center Frequency (MHz)", "Start Frequency (MHz)", "End Frequency (MHz)", "Start Time", "End Time", "Notes"] if c in active_source_df.columns]
+        edited_active_df = st.data_editor(
+            active_source_df[display_cols],
+            use_container_width=True,
+            num_rows="fixed",
+            disabled=[c for c in display_cols if c not in ["Active"]],
+            key=f"active_editor_{project_id}",
+        )
+
+        c_on, c_off, c_save_active = st.columns(3)
+
+        with c_on:
+            if st.button("Set all active", use_container_width=True):
+                active_source_df["Active"] = True
+                replace_project_rows(project_id, active_source_df, logged_in_user)
+                save_version(project_id, active_source_df, logged_in_user, "Set all frequencies active")
+                log_audit_event(project_id, "set_all_frequencies_active", logged_in_user, {"rows": len(active_source_df)})
+                st.success("All rows set active.")
+                st.rerun()
+
+        with c_off:
+            if st.button("Set all inactive", use_container_width=True):
+                active_source_df["Active"] = False
+                replace_project_rows(project_id, active_source_df, logged_in_user)
+                save_version(project_id, active_source_df, logged_in_user, "Set all frequencies inactive")
+                log_audit_event(project_id, "set_all_frequencies_inactive", logged_in_user, {"rows": len(active_source_df)})
+                st.warning("All rows set inactive.")
+                st.rerun()
+
+        with c_save_active:
+            if st.button("Save active/inactive changes", type="primary", use_container_width=True):
+                updated = active_source_df.copy()
+                if "Active" in edited_active_df.columns:
+                    updated["Active"] = edited_active_df["Active"].apply(to_active_bool).values
+
+                replace_project_rows(project_id, updated, logged_in_user)
+                save_version(project_id, updated, logged_in_user, "Updated active/inactive frequency status")
+                log_audit_event(
+                    project_id,
+                    "active_inactive_updated",
+                    logged_in_user,
+                    {
+                        "active": int(updated["Active"].apply(to_active_bool).sum()),
+                        "inactive": int((~updated["Active"].apply(to_active_bool)).sum()),
+                    },
+                )
+                st.success("Active/inactive frequency status saved.")
+                st.rerun()
+
+
+
 with st.expander("Import / replace table from file or pasted CSV", expanded=(len(current_df)==0)):
     c1, c2 = st.columns(2)
 
@@ -3804,16 +4258,20 @@ if auto_dc:
 conf_eq = detect_conflicts_generic(plot_df_conf, "Equipment", guard_mhz)
 conf_ut = detect_conflicts_generic(plot_df_conf, grp_ut, guard_mhz)
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
     "Equipment Power",
     "Equipment Deconfliction",
-    f"{grp_ut} Power",
-    f"{grp_ut} Deconfliction",
+    "Tech Power",
+    "Tech Deconfliction",
+    "Unit Deconfliction",
+    "Sponsor Deconfliction",
     "Map View",
     "Conflict Tables",
     "Conflict Recommendations",
     "Terrain / Range",
     "Smart Planner",
+    "Band Utilization",
+    "Allocation Validation",
 ])
 
 with tab1:
@@ -3822,21 +4280,54 @@ with tab1:
     st.download_button("Download PNG", fig_to_png_bytes(fig), "equipment_power.png", "image/png")
 
 with tab2:
+    st.markdown("""<div class="pcc-panel"><div class="pcc-panel-title">Time × Frequency — By Equipment</div><div class="pcc-panel-caption">Boxes display frequency only; equipment names remain in the legend.</div></div>""", unsafe_allow_html=True)
     fig = build_deconflict_plot(plot_df_conf, "Equipment", pal_equipment, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_eq)
     st.pyplot(fig, use_container_width=True)
     st.download_button("Download PNG", fig_to_png_bytes(fig), "equipment_deconfliction.png", "image/png")
 
 with tab3:
-    fig = build_power_plot(df_ready, grp_ut, dark, alpha_val, tick_major, tick_minor, int(label_digits), pal_unittech, auto_thin, float(label_gap), high_power_top, power_style, float(outline_lwd), show_center_labels)
+    fig = build_power_plot(df_ready, "Tech", dark, alpha_val, tick_major, tick_minor, int(label_digits), pal_unittech, auto_thin, float(label_gap), high_power_top, power_style, float(outline_lwd), show_center_labels)
     st.pyplot(fig, use_container_width=True)
-    st.download_button("Download PNG", fig_to_png_bytes(fig), f"{grp_ut.lower()}_power.png", "image/png")
+    st.download_button("Download PNG", fig_to_png_bytes(fig), "tech_power.png", "image/png")
 
 with tab4:
-    fig = build_deconflict_plot(plot_df_conf, grp_ut, pal_unittech, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_ut)
+    st.markdown("""<div class="pcc-panel"><div class="pcc-panel-title">Time × Frequency — By Tech</div><div class="pcc-panel-caption">Boxes display frequency only; tech names remain in the legend.</div></div>""", unsafe_allow_html=True)
+    fig = build_deconflict_plot(plot_df_conf, "Tech", pal_unittech, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_ut)
     st.pyplot(fig, use_container_width=True)
-    st.download_button("Download PNG", fig_to_png_bytes(fig), f"{grp_ut.lower()}_deconfliction.png", "image/png")
+    st.download_button("Download PNG", fig_to_png_bytes(fig), "tech_deconfliction.png", "image/png")
+
 
 with tab5:
+    st.markdown("""<div class="pcc-panel"><div class="pcc-panel-title">Deconfliction by Unit</div><div class="pcc-panel-caption">Frequency-only labels with unit legend and summary.</div></div>""", unsafe_allow_html=True)
+    st.markdown("#### Unit Deconfliction")
+    if "Unit" in plot_df_conf.columns:
+        pal_unit = make_palette(plot_df_conf["Unit"].fillna("(blank)").astype(str).unique())
+        conf_unit = detect_conflicts_generic(plot_df_conf, "Unit", guard)
+        fig = build_deconflict_plot(plot_df_conf, "Unit", pal_unit, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_unit)
+        st.pyplot(fig, use_container_width=True)
+        st.download_button("Download PNG", fig_to_png_bytes(fig), "unit_deconfliction.png", "image/png")
+        st.markdown("##### Unit summary")
+        st.dataframe(summary_by_group(df_ready, "Unit", conf_unit), use_container_width=True)
+    else:
+        st.info("No Unit column found.")
+
+with tab6:
+    st.markdown("""<div class="pcc-panel"><div class="pcc-panel-title">Deconfliction by Sponsor</div><div class="pcc-panel-caption">Frequency-only labels with sponsor legend and summary.</div></div>""", unsafe_allow_html=True)
+    st.markdown("#### Sponsor Deconfliction")
+    sponsor_col = "Sponsor" if "Sponsor" in plot_df_conf.columns else ("Sponser" if "Sponser" in plot_df_conf.columns else None)
+    if sponsor_col:
+        pal_sponsor = make_palette(plot_df_conf[sponsor_col].fillna("(blank)").astype(str).unique())
+        conf_sponsor = detect_conflicts_generic(plot_df_conf, sponsor_col, guard)
+        fig = build_deconflict_plot(plot_df_conf, sponsor_col, pal_sponsor, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_sponsor)
+        st.pyplot(fig, use_container_width=True)
+        st.download_button("Download PNG", fig_to_png_bytes(fig), "sponsor_deconfliction.png", "image/png")
+        st.markdown("##### Sponsor summary")
+        st.dataframe(summary_by_group(df_ready, sponsor_col, conf_sponsor), use_container_width=True)
+    else:
+        st.info("No Sponsor/Sponser column found.")
+
+
+with tab7:
     st.markdown("#### Map View")
     st.caption("Uses decimal-degree Latitude and Longitude columns. Coverage Radius draws circles using the selected units. Basemap uses free CARTO tiles; no Mapbox/Google token required.")
     deck, map_df = build_map_deck(
@@ -3898,14 +4389,14 @@ with tab5:
             )
 
         st.markdown("#### Map rows")
-        display_cols = [c for c in ["Equipment", "Tech", "Unit", "Latitude", "Longitude", "MGRS", "USNG", "Location", "SiteName", "CoverageRadius", "AntennaHeight", "CenterF", "PowerW", "StartTime", "EndTime"] if c in map_df.columns]
+        display_cols = [c for c in ["Active", "Equipment", "Tech", "Unit", "Latitude", "Longitude", "MGRS", "USNG", "Location", "SiteName", "CoverageRadius", "AntennaHeight", "CenterF", "PowerW", "StartTime", "EndTime"] if c in map_df.columns]
         st.dataframe(map_df[display_cols], use_container_width=True)
 
         with st.expander("Map congestion summary", expanded=False):
             st.caption("Ranks locations/sites by row count, power, coverage, and unique frequencies.")
             st.dataframe(map_congestion_summary(map_df), use_container_width=True)
 
-with tab6:
+with tab8:
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("#### Equipment conflicts")
@@ -3924,7 +4415,7 @@ with tab6:
 
 
 
-with tab7:
+with tab9:
     st.markdown("#### Conflict Severity + Recommended Actions")
     rec_df = combined_conflict_recommendations(conf_eq, conf_ut, grp_ut)
 
@@ -3955,7 +4446,7 @@ with tab7:
 
 
 
-with tab8:
+with tab10:
     st.markdown("#### Terrain / Range Planning")
     st.caption("This is an approximate RF-horizon screening tool using antenna height and great-circle distance. It does not use live elevation terrain data yet.")
 
@@ -4018,7 +4509,7 @@ with tab8:
 
 
 
-with tab9:
+with tab11:
     st.markdown("#### Smart Frequency Planner")
     st.caption("Suggests alternate frequency ranges and time fallback actions using the current conflicts, planning band, guard band, and priority rules.")
 
@@ -4112,6 +4603,31 @@ with tab9:
                 st.error(f"Could not apply selected recommendation: {e}")
 
         log_audit_event(project_id, "smart_frequency_plan_generated", logged_in_user, {"rows": len(plan_df)})
+
+
+
+with tab12:
+    st.markdown("#### Band Utilization Dashboard")
+    band_df = band_utilization_summary(df_ready)
+    st.dataframe(band_df, use_container_width=True)
+    if "Message" not in band_df.columns:
+        st.download_button("Download band utilization CSV", band_df.to_csv(index=False).encode("utf-8"), "band_utilization.csv", "text/csv", use_container_width=True)
+
+with tab13:
+    st.markdown("#### Allocation Validation Center")
+    val_df = allocation_validation_summary(df_ready)
+    if "Message" in val_df.columns:
+        st.success(val_df["Message"].iloc[0])
+    else:
+        st.warning(f"{len(val_df)} allocation row(s) need review.")
+        st.dataframe(val_df, use_container_width=True)
+        st.download_button("Download validation issues CSV", val_df.to_csv(index=False).encode("utf-8"), "allocation_validation_issues.csv", "text/csv", use_container_width=True)
+
+    st.markdown("#### Geographic Reuse Quick Look")
+    reuse_df = geographic_reuse_summary(df_ready)
+    st.dataframe(reuse_df, use_container_width=True)
+    if "Message" not in reuse_df.columns:
+        st.download_button("Download geographic reuse CSV", reuse_df.to_csv(index=False).encode("utf-8"), "geographic_reuse.csv", "text/csv", use_container_width=True)
 
 
 # ---------------- Briefing export ----------------
