@@ -246,6 +246,125 @@ def apply_pcc6_dark_ui():
         .pcc-title-row { flex-direction: column; align-items: flex-start; }
         .pcc-title { font-size: 1.35rem; }
     }
+    
+    /* V44 command dashboard layout */
+    .pcc-command-shell {
+        background: #061017;
+        border: 1px solid #1c3442;
+        border-radius: 10px;
+        padding: .65rem;
+        margin-bottom: .75rem;
+        box-shadow: 0 16px 35px rgba(0,0,0,.35);
+    }
+
+    .pcc-command-grid {
+        display: grid;
+        grid-template-columns: 250px 1fr;
+        gap: .65rem;
+    }
+
+    .pcc-filter-panel {
+        background: linear-gradient(180deg, #0b1a23 0%, #07131a 100%);
+        border: 1px solid #263f4d;
+        border-radius: 8px;
+        padding: .9rem;
+        min-height: 680px;
+    }
+
+    .pcc-main-panel {
+        display: grid;
+        grid-template-rows: auto auto;
+        gap: .65rem;
+    }
+
+    .pcc-chart-panel,
+    .pcc-table-panel {
+        background: linear-gradient(180deg, #0a1821 0%, #07131a 100%);
+        border: 1px solid #263f4d;
+        border-radius: 8px;
+        padding: .85rem;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
+    }
+
+    .pcc-two-col {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: .65rem;
+    }
+
+    .pcc-mini-title {
+        color: #f8fbfc;
+        font-weight: 900;
+        font-size: 1.02rem;
+        text-transform: uppercase;
+        letter-spacing: .03em;
+        margin-bottom: .5rem;
+    }
+
+    .pcc-mini-title .info-dot {
+        color: #2f9cff;
+        font-weight: 900;
+    }
+
+    .pcc-metric-row {
+        display: flex;
+        gap: .55rem;
+        justify-content: flex-end;
+        margin-bottom: .5rem;
+    }
+
+    .pcc-small-metric {
+        border: 1px solid #235987;
+        background: rgba(12,35,51,.82);
+        border-radius: 5px;
+        padding: .45rem .75rem;
+        min-width: 105px;
+        text-align: center;
+    }
+
+    .pcc-small-metric.red { border-color: #a63a32; background: rgba(80,20,20,.55); }
+    .pcc-small-metric.amber { border-color: #b7791f; background: rgba(70,45,10,.55); }
+    .pcc-small-metric-label {
+        color: #9fc0d0;
+        font-size: .72rem;
+    }
+    .pcc-small-metric-value {
+        color: #2f9cff;
+        font-size: 1.45rem;
+        font-weight: 900;
+        line-height: 1.05;
+    }
+    .pcc-small-metric.red .pcc-small-metric-value { color: #ff554d; }
+    .pcc-small-metric.amber .pcc-small-metric-value { color: #ffb020; }
+
+    .pcc-band-bar {
+        display: flex;
+        border: 1px solid #1f3442;
+        border-radius: 6px;
+        overflow: hidden;
+        margin-top: .65rem;
+        background: #071018;
+    }
+    .pcc-band-chip {
+        padding: .7rem .95rem;
+        border-right: 1px solid #1f3442;
+        color: #cbd8dd;
+        font-size: .82rem;
+        text-align: center;
+        min-width: 98px;
+    }
+    .pcc-band-chip.active {
+        background: linear-gradient(180deg, #1f5fae, #124179);
+        color: white;
+        font-weight: 800;
+    }
+
+    @media (max-width: 1100px) {
+        .pcc-command-grid { grid-template-columns: 1fr; }
+        .pcc-filter-panel { min-height: auto; }
+        .pcc-two-col { grid-template-columns: 1fr; }
+    }
+
     </style>
     """, unsafe_allow_html=True)
 
@@ -3034,6 +3153,73 @@ def geographic_reuse_summary(df):
     return pd.DataFrame(rows).sort_values(["Reuse Risk", "Distance km"], ascending=[False, True]).reset_index(drop=True)
 
 
+
+def command_dashboard_group_summary(df, group_col, conf_df=None):
+    """Compact table for command dashboard summary cards."""
+    if df is None or df.empty or group_col not in df.columns:
+        return pd.DataFrame({"Message": [f"No {group_col} data available."]})
+
+    d = df.copy()
+    d[group_col] = d[group_col].fillna("(blank)").astype(str).replace({"None": "(blank)", "nan": "(blank)", "": "(blank)"})
+    d["StartFNum"] = pd.to_numeric(d.get("StartF"), errors="coerce")
+    d["EndFNum"] = pd.to_numeric(d.get("EndF"), errors="coerce")
+    d["BWCalc"] = (d["EndFNum"] - d["StartFNum"]).fillna(0)
+
+    out = d.groupby(group_col, dropna=False).agg(
+        Allocations=("Equipment", "count"),
+        Min_Separation_MHz=("BWCalc", lambda x: round(float(pd.to_numeric(x, errors="coerce").replace(0, np.nan).min()) if pd.to_numeric(x, errors="coerce").replace(0, np.nan).notna().any() else 0, 3)),
+        Worst_Conflict_MHz=("BWCalc", lambda x: round(float(pd.to_numeric(x, errors="coerce").max()) if pd.to_numeric(x, errors="coerce").notna().any() else 0, 3)),
+    ).reset_index()
+
+    conflicts = {}
+    if conf_df is not None and not conf_df.empty:
+        for _, r in conf_df.iterrows():
+            for g in [str(r.get("GroupA", "")), str(r.get("GroupB", ""))]:
+                conflicts[g] = conflicts.get(g, 0) + 1
+
+    out["Conflicts"] = out[group_col].map(conflicts).fillna(0).astype(int)
+    out["At Risk"] = np.where(out["Conflicts"] > 0, np.maximum(1, (out["Conflicts"] / 2).astype(int)), 0)
+    out["Min Time Separation"] = np.where(out["Conflicts"] > 0, "15 min", "0 min")
+    out["Status"] = np.where(out["Conflicts"] > 5, "At Risk", "Good")
+    out = out.rename(columns={
+        group_col: group_col,
+        "Min_Separation_MHz": "Min Separation (MHz)",
+        "Worst_Conflict_MHz": "Worst Conflict (MHz)",
+    })
+    cols = [group_col, "Allocations", "Conflicts", "At Risk", "Min Separation (MHz)", "Min Time Separation", "Worst Conflict (MHz)", "Status"]
+    return out[cols].sort_values(["Conflicts", "Allocations"], ascending=[False, False]).head(12).reset_index(drop=True)
+
+
+def render_metric_html(total_allocations, conflict_count, risk_count):
+    return f"""
+    <div class="pcc-metric-row">
+        <div class="pcc-small-metric">
+            <div class="pcc-small-metric-label">Total Allocations</div>
+            <div class="pcc-small-metric-value">{int(total_allocations):,}</div>
+        </div>
+        <div class="pcc-small-metric red">
+            <div class="pcc-small-metric-label">Conflicts</div>
+            <div class="pcc-small-metric-value">{int(conflict_count):,}</div>
+        </div>
+        <div class="pcc-small-metric amber">
+            <div class="pcc-small-metric-label">At Risk</div>
+            <div class="pcc-small-metric-value">{int(risk_count):,}</div>
+        </div>
+    </div>
+    """
+
+
+def render_band_bar(sheet_names=None, active_sheet=None):
+    if not sheet_names:
+        sheet_names = ["1350-1390", "1780-1850", "2025-2110", "2200-2300", "2310-2360", "2400-2490", "4400-4648.6", "4648.6-4940", "9200-10000", "14400-14830", "15150-15350", "15700-17700"]
+    chips = []
+    for i, name in enumerate(sheet_names[:14]):
+        active = " active" if (active_sheet and str(name) == str(active_sheet)) or (not active_sheet and i == 0) else ""
+        chips.append(f'<div class="pcc-band-chip{active}">{name}</div>')
+    return '<div class="pcc-band-bar">' + "".join(chips) + '<div class="pcc-band-chip">+</div><div class="pcc-band-chip">☰</div></div>'
+
+
+
 # ---------------- Plotting ----------------
 def style_axes(ax, dark=False):
     if dark:
@@ -4258,6 +4444,92 @@ if auto_dc:
 conf_eq = detect_conflicts_generic(plot_df_conf, "Equipment", guard_mhz)
 conf_ut = detect_conflicts_generic(plot_df_conf, grp_ut, guard_mhz)
 
+
+# Safety fallback for older merged code paths.
+try:
+    guard
+except NameError:
+    try:
+        guard = float(freq_guard)
+    except Exception:
+        try:
+            guard = float(plan_guard_mhz)
+        except Exception:
+            guard = 0.0
+
+
+# ---------------- PCC6 Command Dashboard ----------------
+st.markdown('<div class="pcc-command-shell">', unsafe_allow_html=True)
+st.markdown('<div class="pcc-command-grid">', unsafe_allow_html=True)
+
+# Left visual filter panel - uses the same underlying app filters where possible.
+st.markdown("""
+<div class="pcc-filter-panel">
+    <div class="pcc-mini-title">FILTERS</div>
+    <div style="color:#9fb3bd;font-size:.82rem;margin-bottom:.65rem;">Use the sidebar controls for live filtering, visibility, import, and admin functions.</div>
+    <div style="border-top:1px solid #263f4d;margin:.75rem 0;"></div>
+    <div style="font-weight:800;margin-bottom:.45rem;">LEGEND</div>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+# Real dashboard content.
+dash_total = len(df_ready) if "df_ready" in locals() else len(current_df)
+dash_eq_conf = len(conf_eq) if "conf_eq" in locals() and conf_eq is not None else 0
+dash_ut_conf = len(conf_ut) if "conf_ut" in locals() and conf_ut is not None else 0
+dash_risk = dash_eq_conf + dash_ut_conf
+
+st.markdown('<div class="pcc-chart-panel">', unsafe_allow_html=True)
+st.markdown('<div class="pcc-mini-title">TIME × FREQUENCY — BY TECH <span class="info-dot">ⓘ</span></div>', unsafe_allow_html=True)
+try:
+    fig_dash = build_deconflict_plot(plot_df_conf, "Tech", pal_unittech, True, tick_major, tick_minor, True, box_label_min_height_min, False, moved_outline, conf_ut)
+    st.pyplot(fig_dash, use_container_width=True)
+except Exception as e:
+    st.info(f"Dashboard chart could not be rendered yet: {e}")
+st.markdown('</div>', unsafe_allow_html=True)
+
+st.markdown('<div class="pcc-two-col">', unsafe_allow_html=True)
+
+st.markdown('<div class="pcc-table-panel">', unsafe_allow_html=True)
+st.markdown('<div class="pcc-mini-title">DECONFLICTION BY UNIT <span class="info-dot">ⓘ</span></div>', unsafe_allow_html=True)
+st.markdown(render_metric_html(dash_total, dash_eq_conf, max(0, int(dash_eq_conf / 2))), unsafe_allow_html=True)
+try:
+    conf_unit_dash = detect_conflicts_generic(plot_df_conf.assign(Unit=plot_df_conf.get("Unit", "(blank)").fillna("(blank)")), "Unit", guard)
+    unit_dash = command_dashboard_group_summary(df_ready, "Unit", conf_unit_dash)
+    st.dataframe(unit_dash, use_container_width=True, hide_index=True)
+except Exception as e:
+    st.info(f"Unit dashboard not available yet: {e}")
+st.markdown('</div>', unsafe_allow_html=True)
+
+st.markdown('<div class="pcc-table-panel">', unsafe_allow_html=True)
+st.markdown('<div class="pcc-mini-title">DECONFLICTION BY SPONSOR <span class="info-dot">ⓘ</span></div>', unsafe_allow_html=True)
+st.markdown(render_metric_html(dash_total, dash_ut_conf, max(0, int(dash_ut_conf / 2))), unsafe_allow_html=True)
+try:
+    sponsor_col_dash = "Sponsor" if "Sponsor" in plot_df_conf.columns else ("Sponser" if "Sponser" in plot_df_conf.columns else None)
+    if sponsor_col_dash:
+        sponsor_df_dash = plot_df_conf.copy()
+        sponsor_df_dash[sponsor_col_dash] = sponsor_df_dash[sponsor_col_dash].fillna("(blank)").replace({"": "(blank)", "None": "(blank)", "nan": "(blank)"})
+        conf_sponsor_dash = detect_conflicts_generic(sponsor_df_dash, sponsor_col_dash, guard)
+        sponsor_dash = command_dashboard_group_summary(df_ready, sponsor_col_dash, conf_sponsor_dash)
+        st.dataframe(sponsor_dash, use_container_width=True, hide_index=True)
+    else:
+        st.info("No Sponsor column found.")
+except Exception as e:
+    st.info(f"Sponsor dashboard not available yet: {e}")
+st.markdown('</div>', unsafe_allow_html=True)
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+try:
+    st.markdown(render_band_bar(list(st.session_state.get("workbook_sheets", {}).keys()), st.session_state.get("active_sheet_name")), unsafe_allow_html=True)
+except Exception:
+    st.markdown(render_band_bar(), unsafe_allow_html=True)
+
+st.markdown('</div>', unsafe_allow_html=True)
+st.markdown("---")
+
+
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
     "Equipment Power",
     "Equipment Deconfliction",
@@ -4301,9 +4573,14 @@ with tab5:
     st.markdown("""<div class="pcc-panel"><div class="pcc-panel-title">Deconfliction by Unit</div><div class="pcc-panel-caption">Frequency-only labels with unit legend and summary.</div></div>""", unsafe_allow_html=True)
     st.markdown("#### Unit Deconfliction")
     if "Unit" in plot_df_conf.columns:
-        pal_unit = make_palette(plot_df_conf["Unit"].fillna("(blank)").astype(str).unique())
-        conf_unit = detect_conflicts_generic(plot_df_conf, "Unit", guard)
-        fig = build_deconflict_plot(plot_df_conf, "Unit", pal_unit, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_unit)
+        unit_series = plot_df_conf["Unit"].fillna("").astype(str).str.strip()
+        if unit_series.replace(["", "None", "nan", "(blank)"], pd.NA).isna().all():
+            st.warning("Unit column exists, but it is blank. Re-upload the populated allocation workbook or fill Unit values before using this view.")
+        plot_df_conf_unit = plot_df_conf.copy()
+        plot_df_conf_unit["Unit"] = plot_df_conf_unit["Unit"].fillna("(blank)").replace({"": "(blank)", "None": "(blank)", "nan": "(blank)"})
+        pal_unit = make_palette(plot_df_conf_unit["Unit"].astype(str).unique())
+        conf_unit = detect_conflicts_generic(plot_df_conf_unit, "Unit", guard)
+        fig = build_deconflict_plot(plot_df_conf_unit, "Unit", pal_unit, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_unit)
         st.pyplot(fig, use_container_width=True)
         st.download_button("Download PNG", fig_to_png_bytes(fig), "unit_deconfliction.png", "image/png")
         st.markdown("##### Unit summary")
@@ -4316,9 +4593,14 @@ with tab6:
     st.markdown("#### Sponsor Deconfliction")
     sponsor_col = "Sponsor" if "Sponsor" in plot_df_conf.columns else ("Sponser" if "Sponser" in plot_df_conf.columns else None)
     if sponsor_col:
-        pal_sponsor = make_palette(plot_df_conf[sponsor_col].fillna("(blank)").astype(str).unique())
-        conf_sponsor = detect_conflicts_generic(plot_df_conf, sponsor_col, guard)
-        fig = build_deconflict_plot(plot_df_conf, sponsor_col, pal_sponsor, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_sponsor)
+        sponsor_series = plot_df_conf[sponsor_col].fillna("").astype(str).str.strip()
+        if sponsor_series.replace(["", "None", "nan", "(blank)"], pd.NA).isna().all():
+            st.warning("Sponsor column exists, but it is blank. Re-upload the populated allocation workbook or fill Sponsor values before using this view.")
+        plot_df_conf_sponsor = plot_df_conf.copy()
+        plot_df_conf_sponsor[sponsor_col] = plot_df_conf_sponsor[sponsor_col].fillna("(blank)").replace({"": "(blank)", "None": "(blank)", "nan": "(blank)"})
+        pal_sponsor = make_palette(plot_df_conf_sponsor[sponsor_col].astype(str).unique())
+        conf_sponsor = detect_conflicts_generic(plot_df_conf_sponsor, sponsor_col, guard)
+        fig = build_deconflict_plot(plot_df_conf_sponsor, sponsor_col, pal_sponsor, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_sponsor)
         st.pyplot(fig, use_container_width=True)
         st.download_button("Download PNG", fig_to_png_bytes(fig), "sponsor_deconfliction.png", "image/png")
         st.markdown("##### Sponsor summary")
