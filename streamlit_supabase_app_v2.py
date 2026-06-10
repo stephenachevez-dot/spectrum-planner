@@ -50,7 +50,6 @@
 # - V45: Rebuilds command dashboard with real Streamlit columns/panels so it visually matches the mockup better.
 # - V46: Full web-app polish: app shell, fixed top nav style, web cards, status badges, modern dashboard layout, and cleaner controls.
 # - V47: Adds allocation engine: upload Request Tracker + Approved Frequencies, build allocation plan, preserve workbook schema, export workbook.
-# - V48: Active column is always first; all other columns preserve the uploaded spreadsheet order.
 
 import io
 import json
@@ -808,13 +807,12 @@ sb = get_supabase()
 sb_admin = get_supabase_admin()
 
 APP_COLUMNS = [
-    "Active",
     "Start Time", "End Time", "Equipment", "Center Frequency (MHz)",
     "Start Frequency (MHz)", "End Frequency (MHz)", "Bandwidth (MHz)",
     "Power (W)", "Power (dBm)", "Tech", "Unit", "Notes",
     "Latitude", "Longitude", "Location",
     "Antenna Height", "Coverage Radius", "Site Name",
-    "MGRS", "USNG",
+    "MGRS", "USNG", "Active",
 ]
 
 STANDARD_RENAME = {
@@ -1317,7 +1315,6 @@ SMART_COLUMN_ALIASES = {
 def smart_standardize_columns(df):
     """Apply smart column cleanup beyond exact STANDARD_RENAME matching."""
     out = df.copy()
-    uploaded_column_order = list(out.columns)
     new_cols = []
     for c in out.columns:
         raw = str(c).strip()
@@ -1400,50 +1397,6 @@ def apply_active_filter(df, show_inactive=False):
     return df[df["Active"].apply(to_active_bool)].copy()
 
 
-def ensure_active_first_preserve_order(df, default=True):
-    """
-    Keep the uploaded spreadsheet column order exactly as provided,
-    except Active is always moved/inserted as Column A.
-    """
-    if df is None:
-        return df
-    out = df.copy()
-    original_cols = list(out.columns)
-
-    active_cols = [c for c in original_cols if str(c).strip().lower() == "active"]
-    if active_cols:
-        active_col = active_cols[0]
-        if active_col != "Active":
-            out = out.rename(columns={active_col: "Active"})
-        cols = ["Active"] + [c for c in out.columns if c != "Active"]
-        return out[cols]
-
-    out.insert(0, "Active", default)
-    return out
-
-
-def preserve_spreadsheet_order_with_active_first(df, reference_columns=None):
-    """
-    Reorder a dataframe so Active is first, then columns follow the original
-    spreadsheet/reference order. Any new app/planning columns are appended.
-    """
-    if df is None:
-        return df
-    out = ensure_active_first_preserve_order(df)
-    if reference_columns:
-        ref = []
-        seen = set()
-        for c in reference_columns:
-            cc = "Active" if str(c).strip().lower() == "active" else c
-            if cc in out.columns and cc not in seen:
-                ref.append(cc)
-                seen.add(cc)
-        ordered = ["Active"] + [c for c in ref if c != "Active"] + [c for c in out.columns if c not in seen and c != "Active"]
-        return out[ordered]
-    return out
-
-
-
 
 def normalize_uploaded_df(df):
     """Normalize uploaded/pasted data and infer columns when a file has weak or shifted headers."""
@@ -1513,13 +1466,8 @@ def normalize_uploaded_df(df):
 
     if "Active" in out.columns:
         out["Active"] = out["Active"].apply(lambda v: True if pd.isna(v) else to_active_bool(v))
-    out = ensure_active_first_preserve_order(out)
 
-    # Preserve the user's spreadsheet order, with Active moved to Column A.
-    preferred = ["Active"] + [c for c in uploaded_column_order if str(c).strip().lower() != "active" and c in out.columns]
-    # Keep known app columns and any new/imported columns after the user's columns.
-    preferred += [c for c in out.columns if c not in preferred]
-    return out[preferred].reset_index(drop=True)
+    return out[APP_COLUMNS].reset_index(drop=True)
 
 def app_to_internal(df):
     out = df.copy()
@@ -3746,7 +3694,6 @@ def section_header_html(title, caption="", right=""):
 # ---------------- Allocation Engine V47 ----------------
 
 ALLOCATION_ENGINE_COLUMNS = [
-    "Active",
     "Start Time", "End Time", "Equipment", "Center Frequency (MHz)",
     "Start Frequency (MHz)", "End Frequency (MHz)", "Bandwidth (MHz)",
     "Power (W)", "Tech", "Unit", "Sponsor", "Latitude", "Longitude",
@@ -4148,7 +4095,6 @@ def build_allocation_workbook_from_request_and_pool(request_file, approved_file)
                 notes.append("High channel count - review actual nets")
             ism_notes = "; ".join(notes) if notes else "Auto-assigned using approved pool and NTC area reuse"
             row = {
-                "Active": True,
                 "Start Time": "0600",
                 "End Time": "2000",
                 "Equipment": equipment,
@@ -4206,7 +4152,7 @@ def ae_export_allocation_workbook(rows, needs_review, conflicts):
     default = wb.active
     wb.remove(default)
 
-    base_cols = ["Active"] + [c for c in ALLOCATION_ENGINE_COLUMNS if c != "Active"] + ALLOCATION_ENGINE_APPEND_COLUMNS
+    base_cols = ALLOCATION_ENGINE_COLUMNS + ALLOCATION_ENGINE_APPEND_COLUMNS
     # Keep existing format first. App/helper-only fields stay far right.
     extra_cols = ["Allocation ID", "Request Band", "Channels Requested", "Request Status", "POC"]
 
@@ -4859,7 +4805,7 @@ if auto_refresh:
 
 current_df = get_project_rows(project_id)
 current_df_all = current_df.copy()
-current_df = ensure_active_first_preserve_order(apply_active_filter(current_df, show_inactive_rows))
+current_df = apply_active_filter(current_df, show_inactive_rows)
 
 # Restore saved workbook sheets. If there are no saved sheets yet, use the shared allocation table as a single Working sheet.
 saved_sheets = load_project_sheets(project_id)
@@ -5281,7 +5227,7 @@ with st.expander("Active / inactive frequency control", expanded=False):
         active_source_df["Active"] = active_source_df["Active"].apply(to_active_bool)
         active_source_df["Status"] = active_source_df["Active"].apply(lambda x: "Active" if x else "Inactive")
 
-        display_cols = ["Active"] + [c for c in active_source_df.columns if c != "Active"]
+        display_cols = [c for c in ["Active", "Status", "Equipment", "Tech", "Unit", "Sponsor", "Sponser", "Center Frequency (MHz)", "Start Frequency (MHz)", "End Frequency (MHz)", "Start Time", "End Time", "Notes"] if c in active_source_df.columns]
         edited_active_df = st.data_editor(
             active_source_df[display_cols],
             use_container_width=True,
@@ -5615,7 +5561,7 @@ with st.expander("Build Allocation Plan from Request Tracker + Approved Frequenc
             key="v47_approved_freq_upload",
         )
 
-    st.caption("Allocation philosophy: Option B, North/Central/South reusable spectrum pools, geographic reuse first. Output keeps Active as Column A and preserves your spreadsheet column order.")
+    st.caption("Allocation philosophy: Option B, North/Central/South reusable spectrum pools, geographic reuse first.")
     if st.button("Build Allocation Plan", type="primary", use_container_width=True, key="v47_build_allocation_plan"):
         if request_tracker_upload is None or approved_freq_upload is None:
             st.warning("Upload both the Request Tracker and Approved Frequencies file first.")
@@ -5881,7 +5827,7 @@ with tab7:
             )
 
         st.markdown("#### Map rows")
-        display_cols = [c for c in ["Active"] + [c for c in ["Equipment", "Tech", "Unit", "Latitude", "Longitude", "MGRS", "USNG", "Location", "SiteName", "CoverageRadius", "AntennaHeight", "CenterF", "PowerW", "StartTime", "EndTime"] if c in map_df.columns] if c in map_df.columns]
+        display_cols = [c for c in ["Active", "Equipment", "Tech", "Unit", "Latitude", "Longitude", "MGRS", "USNG", "Location", "SiteName", "CoverageRadius", "AntennaHeight", "CenterF", "PowerW", "StartTime", "EndTime"] if c in map_df.columns]
         st.dataframe(map_df[display_cols], use_container_width=True)
 
         with st.expander("Map congestion summary", expanded=False):
