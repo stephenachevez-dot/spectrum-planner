@@ -4203,9 +4203,23 @@ def ae_export_allocation_workbook(rows, needs_review, conflicts):
         conf_ws.column_dimensions[get_column_letter(col)].width = 24
 
     # Frequency Reuse Matrix
-    reuse = defaultdict(lambda: {"count": 0, "areas": set(), "units": set(), "sponsors": set()})
+    reuse = {}
     for r in rows:
-        key = (r.get("Reuse Group ID"), r.get("Center Frequency (MHz)"), r.get("Bandwidth (MHz)"), r.get("Tech"))
+        key = (
+            r.get("Reuse Group ID"),
+            r.get("Center Frequency (MHz)"),
+            r.get("Bandwidth (MHz)"),
+            r.get("Tech"),
+        )
+
+        if key not in reuse:
+            reuse[key] = {
+                "count": 0,
+                "areas": set(),
+                "units": set(),
+                "sponsors": set(),
+            }
+
         reuse[key]["count"] += 1
         reuse[key]["areas"].add(str(r.get("NTC Area")))
         reuse[key]["units"].add(str(r.get("Unit")))
