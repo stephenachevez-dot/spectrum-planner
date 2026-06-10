@@ -1,3 +1,18 @@
+None selected 
+
+Skip to content
+Using Gmail with screen readers
+Conversations
+me
+(no subject)
+ 
+Attachment:
+streamlit_supabase_app_v48_4_upload_keyerror_fix.py
+11:11 PM
+81% of 15 GB used
+Terms · Privacy · Program Policies
+Last account activity: 0 minutes ago
+Open in 1 other location · Details
 # - V48.4: Fixes upload KeyError: 0 by safely handling single/list uploads and Excel sheet dictionaries.
 # - V48.3: Fixes normalize_uploaded_df by removing out.columns dependency completely.
 # - V48.2: Adds full upload/import traceback diagnostics and safer workbook import handling.
@@ -6353,4 +6368,39 @@ with tab13:
     if "Message" in val_df.columns:
         st.success(val_df["Message"].iloc[0])
     else:
-        st.warning(f"{len(val_df)} allocation issues found")
+        st.warning(f"{len(val_df)} allocatio
+n row(s) need review.")
+        st.dataframe(val_df, use_container_width=True)
+        st.download_button("Download validation issues CSV", val_df.to_csv(index=False).encode("utf-8"), "allocation_validation_issues.csv", "text/csv", use_container_width=True)
+
+    st.markdown("#### Geographic Reuse Quick Look")
+    reuse_df = geographic_reuse_summary(df_ready)
+    st.dataframe(reuse_df, use_container_width=True)
+    if "Message" not in reuse_df.columns:
+        st.download_button("Download geographic reuse CSV", reuse_df.to_csv(index=False).encode("utf-8"), "geographic_reuse.csv", "text/csv", use_container_width=True)
+
+
+# ---------------- Briefing export ----------------
+with st.expander("Export briefing PDF", expanded=False):
+    st.caption("Exports a PDF briefing using the current active plotting sheet and current plot settings.")
+    if st.button("Build PDF briefing", use_container_width=True):
+        try:
+            pdf_figs = [
+                build_power_plot(df_ready, "Equipment", dark, alpha_val, tick_major, tick_minor, int(label_digits), pal_equipment, auto_thin, float(label_gap), high_power_top, power_style, float(outline_lwd), show_center_labels),
+                build_deconflict_plot(plot_df_conf, "Equipment", pal_equipment, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_eq),
+                build_power_plot(df_ready, grp_ut, dark, alpha_val, tick_major, tick_minor, int(label_digits), pal_unittech, auto_thin, float(label_gap), high_power_top, power_style, float(outline_lwd), show_center_labels),
+                build_deconflict_plot(plot_df_conf, grp_ut, pal_unittech, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_ut),
+            ]
+            pdf_bytes = briefing_pdf_bytes(project_name, status_info, df_ready, conf_eq, conf_ut, pdf_figs)
+            for _fig in pdf_figs:
+                plt.close(_fig)
+            st.download_button(
+                "Download briefing PDF",
+                data=pdf_bytes,
+                file_name=f"{safe_storage_filename(project_name)}_briefing.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+            log_audit_event(project_id, "briefing_pdf_generated", logged_in_user, {"project": project_name})
+        except Exception as e:
+            st.error(f"Could not build PDF briefing: {e}")
