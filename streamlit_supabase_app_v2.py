@@ -4248,9 +4248,9 @@ def safe_normalize_workbook_sheets_for_import(sheets):
 
 
 
-# ---------------- V49 improved allocation engine helpers ----------------
+# ---------------- V49.1 improved allocation engine, non-destructive ----------------
 
-def _v49_norm_text(value):
+def v491_norm(value):
     if value is None:
         return ""
     try:
@@ -4261,52 +4261,59 @@ def _v49_norm_text(value):
     return str(value).strip()
 
 
-def _v49_compact(value):
-    return re.sub(r"[^a-z0-9]+", "", _v49_norm_text(value).lower())
+def v491_key(value):
+    return re.sub(r"[^a-z0-9]+", "", v491_norm(value).lower())
 
 
-def _v49_find_col(df, candidates):
-    if df is None:
+def v491_find_col(df, names):
+    if df is None or len(df.columns) == 0:
         return None
-    lookup = {_v49_compact(c): c for c in df.columns}
-    for cand in candidates:
-        key = _v49_compact(cand)
-        if key in lookup:
-            return lookup[key]
-    for cand in candidates:
-        key = _v49_compact(cand)
-        for k, c in lookup.items():
-            if key and (key in k or k in key):
-                return c
+    lookup = {v491_key(c): c for c in df.columns}
+    for name in names:
+        k = v491_key(name)
+        if k in lookup:
+            return lookup[k]
+    for name in names:
+        k = v491_key(name)
+        for lk, col in lookup.items():
+            if k and (k in lk or lk in k):
+                return col
     return None
 
 
-def _v49_to_float(value, default=None):
+def v491_float(value, default=None):
     try:
         if value is None or pd.isna(value):
             return default
     except Exception:
         pass
     try:
-        s = str(value).replace(",", "").strip()
-        m = re.search(r"-?\d+(?:\.\d+)?", s)
+        m = re.search(r"-?\d+(?:\.\d+)?", str(value).replace(",", ""))
         return float(m.group(0)) if m else default
     except Exception:
         return default
 
 
-def _v49_to_int(value, default=1):
-    n = _v49_to_float(value, None)
+def v491_int(value, default=1):
+    n = v491_float(value, None)
     if n is None:
         return default
-    try:
-        return max(1, int(round(n)))
-    except Exception:
-        return default
+    return max(1, int(round(n)))
 
 
-def _v49_band_from_frequency(freq):
-    f = _v49_to_float(freq, None)
+def v491_area(value):
+    s = v491_norm(value).lower()
+    if "north" in s:
+        return "North"
+    if "central" in s or "center" in s:
+        return "Central"
+    if "south" in s:
+        return "South"
+    return v491_norm(value) or "NTC Ft Irwin"
+
+
+def v491_band_for_freq(freq):
+    f = v491_float(freq, None)
     if f is None:
         return ""
     bands = [
@@ -4330,293 +4337,234 @@ def _v49_band_from_frequency(freq):
     return ""
 
 
-def _v49_band_match(request_band, freq_band, freq):
-    rb = _v49_compact(request_band)
-    fb = _v49_compact(freq_band) or _v49_compact(_v49_band_from_frequency(freq))
-    if not rb:
-        return True
-    if rb == fb or rb in fb or fb in rb:
-        return True
-    nums = re.findall(r"\d+(?:\.\d+)?", str(request_band))
+def v491_range_from_text(value):
+    nums = re.findall(r"\d+(?:\.\d+)?", str(value or ""))
     if len(nums) >= 2:
-        f = _v49_to_float(freq, None)
-        if f is not None:
-            lo, hi = float(nums[0]), float(nums[1])
-            return min(lo, hi) <= f <= max(lo, hi)
-    return False
+        a, b = float(nums[0]), float(nums[1])
+        if a < 100 and b < 100:
+            a *= 1000
+            b *= 1000
+        return min(a, b), max(a, b)
+    return None, None
 
 
-def _v49_area(value):
-    s = _v49_norm_text(value).lower()
-    if "north" in s:
-        return "North"
-    if "central" in s or "center" in s:
-        return "Central"
-    if "south" in s:
-        return "South"
-    if "ntc" in s or "irwin" in s:
-        return "NTC Ft Irwin"
-    return _v49_norm_text(value) or "NTC Ft Irwin"
-
-
-def _v49_priority(row):
-    txt = " ".join(str(v) for v in row.values()).lower()
-    score = 50
-    if any(k in txt for k in ["locked", "fixed", "specific frequency", "must use"]):
-        score -= 40
-    if any(k in txt for k in ["faa", "atc", "aviation", "safety", "emergency"]):
-        score -= 30
-    if any(k in txt for k in ["experimental", "ghost", "red wolf", "launched effects"]):
-        score -= 20
-    if any(k in txt for k in ["command", "mission", "mc", "tac"]):
-        score -= 10
-    return score
-
-
-def _v49_extract_requests(req_df):
-    if req_df is None or len(req_df) == 0:
-        return []
-    df = req_df.copy()
-
-    col_unit = _v49_find_col(df, ["Unit", "Organization", "Org", "Requesting Unit"])
-    col_sponsor = _v49_find_col(df, ["Sponsor", "Sponser", "Supported Unit", "Higher HQ"])
-    col_tech = _v49_find_col(df, ["Tech", "Technology", "System Type"])
-    col_equipment = _v49_find_col(df, ["Equipment", "System", "Device", "Radio", "Platform"])
-    col_area = _v49_find_col(df, ["NTC Area", "Area", "Location", "Training Area", "North Central South"])
-    col_band = _v49_find_col(df, ["Band", "Frequency Band", "Band Requested", "Requested Band"])
-    col_bw = _v49_find_col(df, ["Bandwidth (MHz)", "Bandwidth", "BW", "BW MHz"])
-    col_channels = _v49_find_col(df, ["Channels Requested", "Channel Count", "Number of Channels", "Qty", "Quantity", "Nets", "Number of Nets"])
-    col_start_time = _v49_find_col(df, ["Start Time", "StartTime", "Start"])
-    col_end_time = _v49_find_col(df, ["End Time", "EndTime", "End"])
-    col_power = _v49_find_col(df, ["Power (W)", "Power", "Watts"])
-    col_notes = _v49_find_col(df, ["Notes", "Justification", "Comments", "Mission"])
-
-    requests = []
-    for _, r in df.iterrows():
-        row = r.to_dict()
-        equipment = _v49_norm_text(row.get(col_equipment)) if col_equipment else ""
-        tech = _v49_norm_text(row.get(col_tech)) if col_tech else ""
-        unit = _v49_norm_text(row.get(col_unit)) if col_unit else ""
-        sponsor = _v49_norm_text(row.get(col_sponsor)) if col_sponsor else ""
-        if not any([equipment, tech, unit, sponsor]):
+def v491_read_request_sheets(uploaded_file):
+    sheets = pd.read_excel(uploaded_file, sheet_name=None)
+    usable = {}
+    skip = {"dashboard", "masterallocation", "needsreview", "conflictreport", "frequencyreusematrix"}
+    for sheet, df in sheets.items():
+        if df is None or df.empty:
             continue
-
-        channels = _v49_to_int(row.get(col_channels), 1) if col_channels else 1
-        bw = _v49_to_float(row.get(col_bw), None) if col_bw else None
-        if bw is None or bw <= 0:
-            m = re.search(r"(\d+(?:\.\d+)?)\s*mhz", (equipment + " " + tech).lower())
-            bw = float(m.group(1)) if m else 1.0
-
-        req = {
-            "Unit": unit,
-            "Sponsor": sponsor,
-            "Tech": tech,
-            "Equipment": equipment or tech or "Unknown Equipment",
-            "NTC Area": _v49_area(row.get(col_area)) if col_area else "NTC Ft Irwin",
-            "Band": _v49_norm_text(row.get(col_band)) if col_band else "",
-            "Bandwidth (MHz)": bw,
-            "Channels Requested": channels,
-            "Start Time": _v49_norm_text(row.get(col_start_time)) if col_start_time else "0600",
-            "End Time": _v49_norm_text(row.get(col_end_time)) if col_end_time else "2000",
-            "Power (W)": _v49_to_float(row.get(col_power), 1) if col_power else 1,
-            "Notes": _v49_norm_text(row.get(col_notes)) if col_notes else "",
-            "__priority": _v49_priority(row),
-        }
-        requests.append(req)
-    return sorted(requests, key=lambda x: (x["__priority"], -x["Channels Requested"], x["Equipment"]))
+        if v491_key(sheet) in skip:
+            continue
+        equipment_col = v491_find_col(df, ["Equipment", "System", "Device", "Radio"])
+        bw_col = v491_find_col(df, ["Bandwidth", "Bandwidth (MHz)", "BW"])
+        start_col = v491_find_col(df, ["Start Time", "Start"])
+        end_col = v491_find_col(df, ["End Time", "End"])
+        if equipment_col or bw_col or (start_col and end_col):
+            usable[sheet] = df.dropna(axis=0, how="all").copy()
+    return usable
 
 
-def _v49_extract_frequency_pool(freq_df):
-    if freq_df is None or len(freq_df) == 0:
-        return []
-    df = freq_df.copy()
-    col_center = _v49_find_col(df, ["Center Frequency (MHz)", "Center Frequency", "Frequency", "Approved Frequency", "CenterF"])
-    col_start = _v49_find_col(df, ["Start Frequency (MHz)", "Start Frequency", "StartF"])
-    col_end = _v49_find_col(df, ["End Frequency (MHz)", "End Frequency", "EndF"])
-    col_bw = _v49_find_col(df, ["Bandwidth (MHz)", "Bandwidth", "BW"])
-    col_band = _v49_find_col(df, ["Band", "Frequency Band"])
-    col_notes = _v49_find_col(df, ["Notes", "Restriction", "Comments"])
+def v491_read_approved_pool(uploaded_file):
+    sheets = pd.read_excel(uploaded_file, sheet_name=None)
+    frames = [df.dropna(axis=0, how="all").copy() for df in sheets.values() if df is not None and not df.empty]
+    if not frames:
+        return pd.DataFrame()
+    raw = pd.concat(frames, ignore_index=True)
 
-    pool = []
-    for _, r in df.iterrows():
-        row = r.to_dict()
-        center = _v49_to_float(row.get(col_center), None) if col_center else None
-        start = _v49_to_float(row.get(col_start), None) if col_start else None
-        end = _v49_to_float(row.get(col_end), None) if col_end else None
-        bw = _v49_to_float(row.get(col_bw), None) if col_bw else None
+    equip_col = v491_find_col(raw, ["Equipment", "System", "Device", "Radio"])
+    center_col = v491_find_col(raw, ["Center Frequency (MHz)", "Center Frequency", "Frequency", "Approved Frequency"])
+    bw_col = v491_find_col(raw, ["Bandwidth (MHz)", "Bandwidth", "BW"])
 
-        if center is None and start is not None and end is not None:
-            center = (start + end) / 2.0
-        if bw is None and start is not None and end is not None:
-            bw = abs(end - start)
-        if center is not None and bw is not None and (start is None or end is None):
-            start = center - bw / 2.0
-            end = center + bw / 2.0
-
+    rows = []
+    for _, r in raw.iterrows():
+        center = v491_float(r.get(center_col), None) if center_col else None
         if center is None:
             continue
-
-        pool.append({
-            "Center Frequency (MHz)": round(center, 6),
-            "Start Frequency (MHz)": round(start, 6) if start is not None else None,
-            "End Frequency (MHz)": round(end, 6) if end is not None else None,
-            "Bandwidth (MHz)": bw if bw is not None else 0,
-            "Band": _v49_norm_text(row.get(col_band)) if col_band else _v49_band_from_frequency(center),
-            "Notes": _v49_norm_text(row.get(col_notes)) if col_notes else "",
+        rows.append({
+            "Approved Equipment": v491_norm(r.get(equip_col)) if equip_col else "",
+            "Center Frequency (MHz)": center,
+            "Bandwidth (MHz)": v491_float(r.get(bw_col), 0.0) if bw_col else 0.0,
+            "Band": v491_band_for_freq(center),
         })
-    return sorted(pool, key=lambda x: (x["Band"], x["Center Frequency (MHz)"]))
+    return pd.DataFrame(rows).sort_values("Center Frequency (MHz)").reset_index(drop=True) if rows else pd.DataFrame()
 
 
-def _v49_time_overlap(a_start, a_end, b_start, b_end):
-    def to_min(v):
-        s = str(v or "").strip().lower()
-        try:
-            if ":" in s:
-                hh, mm = s.split(":")[:2]
-                return int(hh) * 60 + int(mm)
-            m = re.match(r"(\d+(?:\.\d+)?)(am|pm)?", s)
-            if m:
-                val = float(m.group(1))
-                suffix = m.group(2)
-                if suffix == "pm" and val < 12:
-                    val += 12
-                if suffix == "am" and val == 12:
-                    val = 0
-                return int(val * 60)
-        except Exception:
-            pass
-        return None
+def v491_extract_requests(request_sheets):
+    requests = []
+    for sheet, df in request_sheets.items():
+        c_start = v491_find_col(df, ["Start Time", "Start"])
+        c_end = v491_find_col(df, ["End Time", "End"])
+        c_unit = v491_find_col(df, ["Unit", "Organization", "Org"])
+        c_sponsor = v491_find_col(df, ["Sponsor", "Sponser"])
+        c_equipment = v491_find_col(df, ["Equipment", "System", "Device", "Radio"])
+        c_tech = v491_find_col(df, ["Tech", "Technology"])
+        c_channels = v491_find_col(df, ["Channels Requested", "Number of Channels", "Channel Count", "Qty", "Quantity", "Nets"])
+        c_bw = v491_find_col(df, ["Bandwidth (MHz)", "Bandwidth", "BW"])
+        c_area = v491_find_col(df, ["NTC Area", "Area", "Location"])
+        c_req_freq = v491_find_col(df, ["Requested Frequency", "Request Frequency", "Frequency Requested"])
+        c_power = v491_find_col(df, ["Power (W)", "Power", "Watts"])
+        c_notes = v491_find_col(df, ["Notes", "Comments", "Justification"])
 
-    a1, a2, b1, b2 = map(to_min, [a_start, a_end, b_start, b_end])
-    if None in [a1, a2, b1, b2]:
-        return True
+        sheet_lo, sheet_hi = v491_range_from_text(sheet)
+
+        for idx, r in df.iterrows():
+            equipment = v491_norm(r.get(c_equipment)) if c_equipment else ""
+            tech = v491_norm(r.get(c_tech)) if c_tech else ""
+            unit = v491_norm(r.get(c_unit)) if c_unit else ""
+            sponsor = v491_norm(r.get(c_sponsor)) if c_sponsor else ""
+            if not any([equipment, tech, unit, sponsor]):
+                continue
+
+            bw = v491_float(r.get(c_bw), None) if c_bw else None
+            if bw is None or bw <= 0:
+                m = re.search(r"(\d+(?:\.\d+)?)\s*mhz", (equipment + " " + tech).lower())
+                bw = float(m.group(1)) if m else 1.0
+
+            req_lo, req_hi = v491_range_from_text(r.get(c_req_freq)) if c_req_freq else (None, None)
+            if req_lo is None:
+                req_lo, req_hi = sheet_lo, sheet_hi
+
+            requests.append({
+                "__source_sheet": sheet,
+                "__source_row": int(idx) + 2,
+                "__original": r.to_dict(),
+                "Active": True,
+                "Locked": False,
+                "Start Time": r.get(c_start) if c_start else "0600",
+                "End Time": r.get(c_end) if c_end else "0800",
+                "Equipment": equipment,
+                "Tech": tech,
+                "Unit": unit,
+                "Sponsor": sponsor,
+                "Channels Requested": v491_int(r.get(c_channels), 1) if c_channels else 1,
+                "Bandwidth (MHz)": bw,
+                "Power (W)": v491_float(r.get(c_power), None) if c_power else None,
+                "NTC Area": v491_area(r.get(c_area)) if c_area else "NTC Ft Irwin",
+                "Location": "NTC Ft Irwin",
+                "Requested Frequency": r.get(c_req_freq) if c_req_freq else None,
+                "Notes": v491_norm(r.get(c_notes)) if c_notes else "",
+                "__lo": req_lo,
+                "__hi": req_hi,
+            })
+    return requests
+
+
+def v491_ranges_overlap(a1, a2, b1, b2):
     return max(a1, b1) < min(a2, b2)
 
 
-def _v49_is_available(candidate, req, assigned_rows, guard_mhz=0.0):
-    c_start = candidate.get("Start Frequency (MHz)")
-    c_end = candidate.get("End Frequency (MHz)")
-    c_center = candidate.get("Center Frequency (MHz)")
-    c_bw = candidate.get("Bandwidth (MHz)") or req.get("Bandwidth (MHz)") or 0
-
-    if c_start is None or c_end is None:
-        c_start = c_center - c_bw / 2.0
-        c_end = c_center + c_bw / 2.0
-
-    area = req.get("NTC Area", "")
-    for row in assigned_rows:
-        same_area = _v49_area(row.get("NTC Area")) == _v49_area(area)
-        if not same_area:
+def v491_available(req, center, bw, assigned):
+    start = center - bw / 2
+    end = center + bw / 2
+    for row in assigned:
+        # Allow reuse across different North/Central/South areas
+        if v491_area(row.get("NTC Area")) != v491_area(req.get("NTC Area")):
+            if v491_area(row.get("NTC Area")) in ["North", "Central", "South"] and v491_area(req.get("NTC Area")) in ["North", "Central", "South"]:
+                continue
+        rs = v491_float(row.get("Start Frequency (MHz)"), None)
+        re_ = v491_float(row.get("End Frequency (MHz)"), None)
+        if rs is None or re_ is None:
             continue
-        if not _v49_time_overlap(req.get("Start Time"), req.get("End Time"), row.get("Start Time"), row.get("End Time")):
-            continue
-        r_start = _v49_to_float(row.get("Start Frequency (MHz)"), None)
-        r_end = _v49_to_float(row.get("End Frequency (MHz)"), None)
-        if r_start is None or r_end is None:
-            continue
-        if max(c_start - guard_mhz, r_start) < min(c_end + guard_mhz, r_end):
+        if v491_ranges_overlap(start, end, rs, re_):
             return False
     return True
 
 
-def _v49_apply_template_columns(df, sheet_name):
-    try:
-        cols = get_exact_template_columns(sheet_name)
-    except Exception:
-        cols = None
-    if not cols:
-        return df
-    out = df.copy()
-    for col in cols:
-        if col not in out.columns:
-            if col == "Active":
-                out[col] = True
-            elif col == "Locked":
-                out[col] = False
-            else:
-                out[col] = None
-    return out[cols + [c for c in out.columns if c not in cols]]
+def v491_best_candidates(req, approved_pool):
+    if approved_pool is None or approved_pool.empty:
+        return pd.DataFrame()
+    pool = approved_pool.copy()
+    lo, hi = req.get("__lo"), req.get("__hi")
+    if lo is not None and hi is not None:
+        pool = pool[pool["Center Frequency (MHz)"].apply(lambda x: lo <= float(x) <= hi)]
+    bw = float(req.get("Bandwidth (MHz)") or 0)
+    good_bw = pool[(pool["Bandwidth (MHz)"].fillna(0) >= bw) | (pool["Bandwidth (MHz)"].fillna(0) == 0)]
+    if not good_bw.empty:
+        pool = good_bw
+    pool["__score"] = pool["Approved Equipment"].apply(
+        lambda x: 100 if v491_key(x) and (v491_key(x) in v491_key(req.get("Equipment")) or v491_key(req.get("Equipment")) in v491_key(x)) else 0
+    )
+    return pool.sort_values(["__score", "Center Frequency (MHz)"], ascending=[False, True])
 
 
-def build_improved_allocation_plan_v49(request_df, approved_freq_df):
-    requests = _v49_extract_requests(request_df)
-    pool = _v49_extract_frequency_pool(approved_freq_df)
+def v491_build_plan(request_file, approved_file):
+    request_sheets = v491_read_request_sheets(request_file)
+    approved_pool = v491_read_approved_pool(approved_file)
+    requests = v491_extract_requests(request_sheets)
 
-    allocation_rows = []
-    needs_review = []
+    assigned = []
+    needs = []
 
     for req in requests:
-        channels_needed = int(req.get("Channels Requested", 1))
-        candidates = [
-            f for f in pool
-            if _v49_band_match(req.get("Band"), f.get("Band"), f.get("Center Frequency (MHz)"))
-            and (not f.get("Bandwidth (MHz)") or float(f.get("Bandwidth (MHz)") or 0) >= float(req.get("Bandwidth (MHz)") or 0))
-        ]
-        if not candidates and not _v49_norm_text(req.get("Band")):
-            candidates = pool[:]
-
-        for channel_idx in range(1, channels_needed + 1):
-            chosen = None
-            for cand in candidates:
-                if _v49_is_available(cand, req, allocation_rows, guard_mhz=0.0):
-                    chosen = cand
+        candidates = v491_best_candidates(req, approved_pool)
+        bw = float(req.get("Bandwidth (MHz)") or 0)
+        for ch in range(1, int(req.get("Channels Requested", 1)) + 1):
+            picked = None
+            for _, cand in candidates.iterrows():
+                center = float(cand["Center Frequency (MHz)"])
+                if v491_available(req, center, bw, assigned):
+                    picked = center
                     break
 
-            if chosen is None:
-                needs_review.append({
-                    "Active": True,
-                    "Locked": False,
-                    "Start Time": req.get("Start Time"),
-                    "End Time": req.get("End Time"),
-                    "Equipment": req.get("Equipment"),
-                    "Center Frequency (MHz)": None,
-                    "Start Frequency (MHz)": None,
-                    "End Frequency (MHz)": None,
-                    "Bandwidth (MHz)": req.get("Bandwidth (MHz)"),
-                    "Power (W)": req.get("Power (W)"),
-                    "Tech": req.get("Tech"),
-                    "Unit": req.get("Unit"),
-                    "Sponsor": req.get("Sponsor"),
-                    "Location": "NTC Ft Irwin",
-                    "NTC Area": req.get("NTC Area"),
-                    "Notes": f"Needs Review: no clean approved frequency found for channel {channel_idx} of {channels_needed}. {req.get('Notes','')}".strip(),
-                    "Channels Requested": channels_needed,
-                    "Channel Number": channel_idx,
-                    "Assignment Status": "Needs Review",
-                })
-                continue
-
-            bw = float(req.get("Bandwidth (MHz)") or chosen.get("Bandwidth (MHz)") or 0)
-            center = float(chosen.get("Center Frequency (MHz)"))
-            start = center - bw / 2.0
-            end = center + bw / 2.0
-
-            allocation_rows.append({
+            row = dict(req.get("__original", {}))
+            row.update({
                 "Active": True,
                 "Locked": False,
                 "Start Time": req.get("Start Time"),
                 "End Time": req.get("End Time"),
                 "Equipment": req.get("Equipment"),
-                "Center Frequency (MHz)": round(center, 6),
-                "Start Frequency (MHz)": round(start, 6),
-                "End Frequency (MHz)": round(end, 6),
+                "Center Frequency (MHz)": picked,
                 "Bandwidth (MHz)": bw,
+                "Start Frequency (MHz)": round(picked - bw / 2, 6) if picked is not None else None,
+                "End Frequency (MHz)": round(picked + bw / 2, 6) if picked is not None else None,
                 "Power (W)": req.get("Power (W)"),
                 "Tech": req.get("Tech"),
                 "Unit": req.get("Unit"),
                 "Sponsor": req.get("Sponsor"),
-                "Location": "NTC Ft Irwin",
+                "Location": req.get("Location"),
                 "NTC Area": req.get("NTC Area"),
-                "Notes": req.get("Notes"),
-                "Channels Requested": channels_needed,
-                "Channel Number": channel_idx,
-                "Reuse Group ID": f"RG-{abs(hash((round(center, 6), bw))) % 100000:05d}",
-                "Assignment Status": "Allocated",
+                "Channel Number": ch,
+                "Channels Requested": req.get("Channels Requested"),
+                "Source Sheet": req.get("__source_sheet"),
+                "Source Row": req.get("__source_row"),
             })
 
-    allocation_df = _v49_apply_template_columns(pd.DataFrame(allocation_rows), "Master Allocation")
-    needs_review_df = _v49_apply_template_columns(pd.DataFrame(needs_review), "Other - Needs Review")
-    return allocation_df, needs_review_df
+            if picked is None:
+                row["Allocation Status"] = "Needs Review"
+                row["Notes"] = f"Needs Review: no clean approved frequency found for channel {ch} of {req.get('Channels Requested')}. {req.get('Notes','')}"
+                needs.append(row)
+            else:
+                row["Allocation Status"] = "Allocated"
+                row["Notes"] = f"{req.get('Notes','')} | Channel {ch} of {req.get('Channels Requested')}".strip(" |")
+                assigned.append(row)
+
+    return pd.DataFrame(assigned + needs), pd.DataFrame(needs)
+
+
+def v491_export_plan(master, needs):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        dashboard = pd.DataFrame([
+            ["Generated", datetime.now().strftime("%Y-%m-%d %H:%M")],
+            ["Total Rows", len(master)],
+            ["Allocated", int((master.get("Allocation Status", "") == "Allocated").sum()) if not master.empty else 0],
+            ["Needs Review", len(needs)],
+        ], columns=["Metric", "Value"])
+        dashboard.to_excel(writer, sheet_name="Dashboard", index=False)
+        master.to_excel(writer, sheet_name="Master Allocation", index=False)
+
+        if "Source Sheet" in master.columns:
+            for sheet in master["Source Sheet"].dropna().unique():
+                master[master["Source Sheet"] == sheet].to_excel(writer, sheet_name=str(sheet)[:31], index=False)
+
+        for area in ["North", "Central", "South"]:
+            if "NTC Area" in master.columns:
+                master[master["NTC Area"].astype(str).str.contains(area, case=False, na=False)].to_excel(writer, sheet_name=f"NTC {area}", index=False)
+
+        needs.to_excel(writer, sheet_name="Needs Review", index=False)
+    return output.getvalue()
 
 
 # ---------------- Allocation Engine V47 ----------------
@@ -6489,46 +6437,31 @@ except NameError:
 
 # ---------------- Allocation Builder UI V47 ----------------
 
-# ---------------- V49 Improved Allocation Tool UI ----------------
-with st.expander("V49 Improved Allocation Plan Builder — channel-count aware", expanded=False):
-    st.caption("Creates one allocation row per requested channel. Unassigned channels go to Needs Review.")
-    v49_req_file = st.file_uploader("V49 Request Tracker (.xlsx)", type=["xlsx"], key="v49_req_file")
-    v49_freq_file = st.file_uploader("V49 Approved Frequencies (.xlsx)", type=["xlsx"], key="v49_freq_file")
+# ---------------- V49.1 Improved Allocation Tool UI - preserves existing controls ----------------
+with st.expander("Improved Allocation Plan Builder — keeps Active/Locked controls", expanded=False):
+    st.caption("This does not remove your existing on/off, locked, save, snapshot, or workbook controls.")
+    v491_req_file = st.file_uploader("Request Tracker for improved builder (.xlsx)", type=["xlsx"], key="v491_req_file")
+    v491_freq_file = st.file_uploader("Approved Frequencies for improved builder (.xlsx)", type=["xlsx"], key="v491_freq_file")
 
-    if st.button("Build V49 Improved Allocation Plan", use_container_width=True, key="v49_build_plan"):
+    if st.button("Build Improved Allocation Plan", use_container_width=True, key="v491_build"):
         try:
-            if v49_req_file is None or v49_freq_file is None:
-                st.warning("Upload both the Request Tracker and Approved Frequencies workbook.")
+            if v491_req_file is None or v491_freq_file is None:
+                st.warning("Upload both files.")
             else:
-                req_sheets = pd.read_excel(v49_req_file, sheet_name=None)
-                freq_sheets = pd.read_excel(v49_freq_file, sheet_name=None)
+                master_df_v491, needs_df_v491 = v491_build_plan(v491_req_file, v491_freq_file)
+                st.success(f"Built plan: {len(master_df_v491)} total rows, {len(needs_df_v491)} needs review.")
 
-                req_df = next((df for df in req_sheets.values() if df is not None and len(df) > 0), pd.DataFrame())
-                freq_df = next((df for df in freq_sheets.values() if df is not None and len(df) > 0), pd.DataFrame())
-
-                allocation_df, needs_review_df = build_improved_allocation_plan_v49(req_df, freq_df)
-
-                st.success(f"Built V49 plan: {len(allocation_df)} allocated rows, {len(needs_review_df)} needs-review rows.")
-                st.dataframe(allocation_df.head(200), use_container_width=True, hide_index=True)
-
-                if len(needs_review_df) > 0:
-                    st.warning(f"{len(needs_review_df)} requested channels could not be cleanly assigned.")
-                    st.dataframe(needs_review_df.head(200), use_container_width=True, hide_index=True)
-
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                    allocation_df.to_excel(writer, sheet_name="Master Allocation", index=False)
-                    needs_review_df.to_excel(writer, sheet_name="Other - Needs Review", index=False)
+                st.dataframe(master_df_v491.head(300), use_container_width=True, hide_index=True)
 
                 st.download_button(
-                    "Download V49 Improved Allocation Plan",
-                    data=output.getvalue(),
-                    file_name="PCC6_V49_Improved_Allocation_Plan.xlsx",
+                    "Download Improved Allocation Workbook",
+                    data=v491_export_plan(master_df_v491, needs_df_v491),
+                    file_name="PCC6_Improved_Allocation_Plan_v49_1.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                 )
         except Exception as e:
-            st.error(f"V49 allocation build failed: {type(e).__name__}: {str(e)}")
+            st.error(f"Improved allocation build failed: {type(e).__name__}: {str(e)}")
             try:
                 st.code(traceback.format_exc())
             except Exception:
@@ -6590,7 +6523,8 @@ with left_col:
     st.markdown('<div class="v45-filter-box"><div class="v45-filter-title">Filters</div>', unsafe_allow_html=True)
     st.caption("Main filters are controlled in the sidebar. This panel mirrors the mockup layout.")
     st.markdown("**Band**")
-    st.code(st.session_state.get("active_sheet_name", "Active band"), language=None)
+ 
+   st.code(st.session_state.get("active_sheet_name", "Active band"), language=None)
     st.markdown("**Date**")
     st.code("Current project", language=None)
     st.markdown("**Legend**")
