@@ -1,52 +1,3 @@
-# - Avoids Supabase column mismatch by saving allocation rows in row_data JSONB.
-# - Power plot center-frequency labels are near the top inside boxes.
-# - Deconfliction labels are inside boxes.
-# - Improved scheduler only separates rows that actually overlap in frequency.
-# - Uses Supabase Auth login/signup instead of one shared password.
-# - Adds admin user management with roles: admin, editor, viewer, disabled.
-# - Adds legends to every plot tab.
-# - Keeps uploaded preview data in session state until saved.
-# - Cleans Excel/Pandas values before saving versions to Supabase JSON.
-# - Adds Map View tab using Latitude/Longitude and optional coverage circles.
-# - Adds stronger thin black outlines to separate overlapping visual bands.
-# - Saves original uploaded CSV/XLSX files to Supabase Storage for download after logout/login.
-# - Adds admin-only buttons to delete version history and clear the shared allocation table.
-# - Saves/restores all Excel workbook sheets as project tabs.
-# - Adds download buttons for map HTML and map data CSV.
-# - Restores admin-only buttons to delete version history and clear shared allocation table.
-# - Fixes Auto Deconflict Anchor so changing the anchor time repacks the schedule.
-# - Shows workbook-tab persistence status and saves all tabs permanently to Supabase.
-# - Fixes NaN/Inf JSON errors when saving workbook sheets.
-# - Adds admin-only project deletion for old projects.
-# - Adds approval workflow, audit trail, and PDF briefing export.
-# - Fixes missing map HTML download helper.
-# - Adds project-level member permissions so admins control who can access each project.
-# - Adds KML export for map points/coverage and richer GIS-ready site popups.
-# - Adds live collaboration dashboard: online users, activity feed, and optional auto-refresh.
-# - Adds map heatmap/congestion layer for dense or overlapping spectrum activity.
-# - Adds conflict severity scoring, recommended actions, and CSV export.
-# - Adds mission templates so users can save/reuse standard workbook setups.
-# - Adds GeoJSON export for GIS/web map workflows.
-# - Adds terrain/range planning: distance, RF horizon estimate, and site-to-site LOS screening.
-# - Adds full project backup/restore JSON export for admins.
-# - Adds smart frequency planning with alternate frequency/time-shift recommendations.
-# - Adds Apply Smart Plan workflow to update workbook rows from selected recommendations.
-# - Adds row-level edit history, project dashboard, MGRS/USNG support, and smart import cleanup.
-# - Fixes mission template project_id NameError in sidebar.
-# - Fixes missing json import for project backup export.
-# - Adds local json import fallback and recursive backup JSON sanitizer.
-# - Restores missing conflict_summary function for Conflict Tables tab.
-# - Restores missing conflict recommendation helper functions.
-# - Restores missing Smart Planner helper functions.
-# - V40: frequency-only box labels, Unit/Sponsor deconfliction tabs, .95 transparency default, high-power default off, dashboard visuals.
-# - V41: dark PCC6 command-dashboard UI styling.
-# - V42: Active/Inactive frequency toggle so unused allocations can be turned off without deleting rows.
-# - V43: Fixes undefined guard variable in Unit/Sponsor deconfliction and improves blank Unit/Sponsor handling.
-# - V44: Adds real PCC6 command-dashboard layout to match the requested mockup style.
-# - V45: Rebuilds command dashboard with real Streamlit columns/panels so it visually matches the mockup better.
-# - V46: Full web-app polish: app shell, fixed top nav style, web cards, status badges, modern dashboard layout, and cleaner controls.
-# - V47: Adds allocation engine: upload Request Tracker + Approved Frequencies, build allocation plan, preserve workbook schema, export workbook.
-
 import io
 import json
 import math
@@ -4252,7 +4203,7 @@ def ae_export_allocation_workbook(rows, needs_review, conflicts):
         conf_ws.column_dimensions[get_column_letter(col)].width = 24
 
     # Frequency Reuse Matrix
-    reuse = collections.defaultdict(lambda: {"count": 0, "areas": set(), "units": set(), "sponsors": set()})
+    reuse = defaultdict(lambda: {"count": 0, "areas": set(), "units": set(), "sponsors": set()})
     for r in rows:
         key = (r.get("Reuse Group ID"), r.get("Center Frequency (MHz)"), r.get("Bandwidth (MHz)"), r.get("Tech"))
         reuse[key]["count"] += 1
