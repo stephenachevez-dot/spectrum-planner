@@ -4095,9 +4095,16 @@ def smart_plan_allowed_by_locks(row, plan_type):
 
 
 
-# ---------------- V53 manual frequency recalculation ----------------
+# ---------------- V56 stable frequency helpers and clean chart ----------------
 
-def _find_col_case_insensitive(df, names):
+DEFAULT_PLOT_PALETTE = [
+    "#2F80ED", "#27AE60", "#F2994A", "#F2C94C", "#9B51E0",
+    "#EB5757", "#56CCF2", "#6FCF97", "#BB6BD9", "#F97316",
+    "#14B8A6", "#A3E635", "#60A5FA", "#F472B6", "#94A3B8",
+]
+
+
+def _v56_find_col(df, names):
     if df is None:
         return None
     lookup = {str(c).strip().lower(): c for c in df.columns}
@@ -4108,71 +4115,246 @@ def _find_col_case_insensitive(df, names):
     return None
 
 
+def normalize_color_key(value):
+    s = str(value or "").strip()
+    return s if s and s.lower() not in ["none", "nan", "(blank)", "blank"] else "(blank)"
+
+
+def build_category_color_map(df, color_by="Tech", existing_map=None):
+    existing_map = existing_map or {}
+    if df is None or len(df) == 0 or color_by not in df.columns:
+        return existing_map
+    unique_vals = []
+    for v in df[color_by].fillna("(blank)").astype(str).tolist():
+        key = normalize_color_key(v)
+        if key not in unique_vals:
+            unique_vals.append(key)
+    color_map = dict(existing_map)
+    next_idx = len(color_map)
+    for v in unique_vals:
+        if v not in color_map:
+            color_map[v] = DEFAULT_PLOT_PALETTE[next_idx % len(DEFAULT_PLOT_PALETTE)]
+            next_idx += 1
+    return color_map
+
+
+def color_for_row(row, color_by, color_map):
+    try:
+        key = normalize_color_key(row.get(color_by, "(blank)"))
+    except Exception:
+        key = "(blank)"
+    return color_map.get(key, "#64748B")
+
+
 def recalc_start_end_from_center_bandwidth(df, original_df=None, only_changed=True):
     """
-    When the user manually edits Center Frequency or Bandwidth,
-    update Start/End Frequency automatically:
-        Start = Center - Bandwidth/2
-        End   = Center + Bandwidth/2
-
-    Lock Frequency / Lock Both / Locked rows are protected.
+    Manual Center Frequency/Bandwidth edits automatically update Start and End Frequency.
+    Frequency-locked rows are protected.
     """
     if df is None:
         return df
-
     out = df.copy()
-
-    center_col = _find_col_case_insensitive(out, [
-        "Center Frequency (MHz)", "Center Frequency", "CenterF", "Center MHz"
-    ])
-    start_col = _find_col_case_insensitive(out, [
-        "Start Frequency (MHz)", "Start Frequency", "StartF", "Start MHz"
-    ])
-    end_col = _find_col_case_insensitive(out, [
-        "End Frequency (MHz)", "End Frequency", "EndF", "End MHz"
-    ])
-    bw_col = _find_col_case_insensitive(out, [
-        "Bandwidth (MHz)", "Bandwidth", "BandwidthMHz", "BW MHz"
-    ])
-
+    center_col = _v56_find_col(out, ["Center Frequency (MHz)", "Center Frequency", "CenterF", "Center MHz"])
+    start_col = _v56_find_col(out, ["Start Frequency (MHz)", "Start Frequency", "StartF", "Start MHz"])
+    end_col = _v56_find_col(out, ["End Frequency (MHz)", "End Frequency", "EndF", "End MHz"])
+    bw_col = _v56_find_col(out, ["Bandwidth (MHz)", "Bandwidth", "BandwidthMHz", "BW MHz"])
     if center_col is None or start_col is None or end_col is None or bw_col is None:
         return ensure_active_first_preserve_order(out)
-
     for idx in out.index:
         try:
             row = out.loc[idx]
-
-            # Do not change protected frequency rows.
             if is_frequency_locked(row):
                 continue
-
             center = pd.to_numeric(row.get(center_col), errors="coerce")
             bw = pd.to_numeric(row.get(bw_col), errors="coerce")
-
             if pd.isna(center) or pd.isna(bw) or float(bw) <= 0:
                 continue
-
             if only_changed and original_df is not None and idx in original_df.index:
                 old_center = pd.to_numeric(original_df.loc[idx].get(center_col), errors="coerce") if center_col in original_df.columns else None
                 old_bw = pd.to_numeric(original_df.loc[idx].get(bw_col), errors="coerce") if bw_col in original_df.columns else None
                 center_changed = not pd.isna(old_center) and abs(float(center) - float(old_center)) > 1e-9
                 bw_changed = not pd.isna(old_bw) and abs(float(bw) - float(old_bw)) > 1e-9
-                # If neither Center nor Bandwidth changed, leave Start/End alone.
                 if not center_changed and not bw_changed:
                     continue
-
             out.loc[idx, start_col] = round(float(center) - float(bw) / 2.0, 6)
             out.loc[idx, end_col] = round(float(center) + float(bw) / 2.0, 6)
-
         except Exception:
             continue
-
     return ensure_active_first_preserve_order(out)
 
 
 def recalc_all_unlocked_frequency_ranges(df):
-    """Bulk recalculation for all unlocked rows."""
     return recalc_start_end_from_center_bandwidth(df, original_df=None, only_changed=False)
+
+
+def _v56_to_hour(v, default):
+    if pd.isna(v):
+        return default
+    s = str(v).strip().lower()
+    try:
+        if ":" in s:
+            hh, mm = s.split(":")[:2]
+            return float(hh) + float(mm) / 60.0
+        m = re.match(r"(\d+(?:\.\d+)?)(am|pm)?", s)
+        if m:
+            val = float(m.group(1))
+            suffix = m.group(2)
+            if suffix == "pm" and val < 12:
+                val += 12
+            if suffix == "am" and val == 12:
+                val = 0
+            return val
+    except Exception:
+        pass
+    return default
+
+
+def v56_prepare_chart_df(df):
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+    out = df.copy()
+    center_col = _v56_find_col(out, ["Center Frequency (MHz)", "Center Frequency", "CenterF", "Center MHz"])
+    start_col = _v56_find_col(out, ["Start Frequency (MHz)", "Start Frequency", "StartF", "Start MHz"])
+    end_col = _v56_find_col(out, ["End Frequency (MHz)", "End Frequency", "EndF", "End MHz"])
+    bw_col = _v56_find_col(out, ["Bandwidth (MHz)", "Bandwidth", "BandwidthMHz", "BW MHz"])
+    start_time_col = _v56_find_col(out, ["Start Time", "StartTime", "StartTimeOrig", "StartTimeDC"])
+    end_time_col = _v56_find_col(out, ["End Time", "EndTime", "EndTimeOrig", "EndTimeDC"])
+
+    if center_col is not None:
+        out["__CenterMHz"] = pd.to_numeric(out[center_col], errors="coerce")
+    elif start_col is not None and end_col is not None:
+        out["__CenterMHz"] = (pd.to_numeric(out[start_col], errors="coerce") + pd.to_numeric(out[end_col], errors="coerce")) / 2
+    else:
+        return pd.DataFrame()
+
+    if start_col is not None:
+        out["__StartMHz"] = pd.to_numeric(out[start_col], errors="coerce")
+    elif bw_col is not None:
+        out["__StartMHz"] = out["__CenterMHz"] - pd.to_numeric(out[bw_col], errors="coerce") / 2
+    else:
+        out["__StartMHz"] = out["__CenterMHz"]
+
+    if end_col is not None:
+        out["__EndMHz"] = pd.to_numeric(out[end_col], errors="coerce")
+    elif bw_col is not None:
+        out["__EndMHz"] = out["__CenterMHz"] + pd.to_numeric(out[bw_col], errors="coerce") / 2
+    else:
+        out["__EndMHz"] = out["__CenterMHz"]
+
+    out["__BandwidthMHz"] = out["__EndMHz"] - out["__StartMHz"]
+    out["__StartHour"] = out[start_time_col].apply(lambda v: _v56_to_hour(v, 6)) if start_time_col else 6
+    out["__EndHour"] = out[end_time_col].apply(lambda v: _v56_to_hour(v, 20)) if end_time_col else 20
+    out = out.dropna(subset=["__StartMHz", "__EndMHz", "__CenterMHz"])
+    out = out[out["__EndMHz"] >= out["__StartMHz"]]
+    return out.reset_index(drop=True)
+
+
+def v56_assign_lanes(df):
+    if df is None or len(df) == 0:
+        return df
+    d = df.sort_values(["__StartMHz", "__EndMHz"]).copy()
+    lane_end = []
+    lanes = []
+    for _, row in d.iterrows():
+        placed = False
+        for lane_idx, last_end in enumerate(lane_end):
+            if float(row["__StartMHz"]) >= last_end:
+                lanes.append(lane_idx)
+                lane_end[lane_idx] = float(row["__EndMHz"])
+                placed = True
+                break
+        if not placed:
+            lanes.append(len(lane_end))
+            lane_end.append(float(row["__EndMHz"]))
+    d["__Lane"] = lanes
+    return d
+
+
+def v56_should_label(row, label_density, width_mhz, min_label_width):
+    conflict_value = str(row.get("Conflict Status", row.get("ConflictStatus", ""))).lower()
+    is_conflict = "conflict" in conflict_value and "no conflict" not in conflict_value
+    if label_density == "Off":
+        return False
+    if label_density == "Conflicts only":
+        return is_conflict and width_mhz >= min_label_width
+    if label_density == "Major labels only":
+        return width_mhz >= min_label_width
+    if label_density == "All labels":
+        return width_mhz >= min_label_width
+    return False
+
+
+def render_clean_time_frequency_chart(df, title="Time × Frequency", default_color_by="Unit", key_prefix="v56"):
+    chart_df = v56_prepare_chart_df(df)
+    if chart_df is None or len(chart_df) == 0:
+        st.info("No valid frequency rows to plot.")
+        return
+
+    c1, c2, c3, c4 = st.columns([1.2, 1.2, 1, 1])
+    with c1:
+        options = [c for c in ["Unit", "Tech", "Sponsor", "Sponser", "Equipment", "NTC Area", "Conflict Status"] if c in chart_df.columns]
+        if not options:
+            options = [chart_df.columns[0]]
+        default_idx = options.index(default_color_by) if default_color_by in options else 0
+        color_by = st.selectbox("Color by", options, index=default_idx, key=f"{key_prefix}_color_by")
+    with c2:
+        label_density = st.selectbox("Label density", ["Conflicts only", "Major labels only", "Off", "All labels"], index=0, key=f"{key_prefix}_label_density")
+    with c3:
+        show_details = st.toggle("Show details", value=True, key=f"{key_prefix}_show_details")
+    with c4:
+        min_label_width = st.number_input("Min label MHz", min_value=1.0, max_value=50.0, value=8.0, step=1.0, key=f"{key_prefix}_min_label_width")
+
+    color_map = build_category_color_map(chart_df, color_by)
+    lane_df = v56_assign_lanes(chart_df)
+    max_lane = int(lane_df["__Lane"].max()) if "__Lane" in lane_df.columns and len(lane_df) else 0
+    fig_height = max(4.5, min(10, 2.8 + max_lane * 0.35))
+    fig, ax = plt.subplots(figsize=(12.5, fig_height), dpi=140)
+    fig.patch.set_facecolor("#111827")
+    ax.set_facecolor("#111827")
+
+    for _, row in lane_df.iterrows():
+        x0 = float(row["__StartMHz"])
+        x1 = float(row["__EndMHz"])
+        width = max(0.001, x1 - x0)
+        y = float(row.get("__Lane", 0))
+        color = color_for_row(row, color_by, color_map)
+        conflict_value = str(row.get("Conflict Status", row.get("ConflictStatus", ""))).lower()
+        edge_color = "#F87171" if ("conflict" in conflict_value and "no conflict" not in conflict_value) else "#D1D5DB"
+        ax.add_patch(plt.Rectangle((x0, y - 0.36), width, 0.72, facecolor=color, edgecolor=edge_color, linewidth=1.0, alpha=0.92))
+        if v56_should_label(row, label_density, width, float(min_label_width)):
+            ax.text(x0 + width / 2, y, f'{float(row["__CenterMHz"]):.3f} MHz', ha="center", va="center", fontsize=8, fontweight="bold", color="white", clip_on=True)
+
+    xmin = float(lane_df["__StartMHz"].min())
+    xmax = float(lane_df["__EndMHz"].max())
+    pad = max(1.0, (xmax - xmin) * 0.04)
+    ax.set_xlim(xmin - pad, xmax + pad)
+    ax.set_ylim(-1, max(1, max_lane + 1))
+    ax.set_xlabel("Frequency (MHz)", color="white", fontweight="bold")
+    ax.set_ylabel("Visual lanes", color="white", fontweight="bold")
+    ax.set_title(f"{title} — by {color_by}", color="white", fontweight="bold", fontsize=14)
+    ax.grid(True, color="#374151", linestyle="--", linewidth=0.55, alpha=0.75)
+    ax.tick_params(colors="white")
+    for spine in ax.spines.values():
+        spine.set_color("#CBD5E1")
+
+    visible_keys = []
+    for v in lane_df[color_by].fillna("(blank)").astype(str).tolist():
+        k = normalize_color_key(v)
+        if k not in visible_keys:
+            visible_keys.append(k)
+    handles = [plt.Line2D([0], [0], marker="s", color="w", markerfacecolor=color_map[k], markersize=10, label=k) for k in visible_keys if k in color_map]
+    if handles:
+        leg = ax.legend(handles=handles, title=color_by, loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=True)
+        leg.get_frame().set_facecolor("#111827")
+        leg.get_frame().set_edgecolor("#CBD5E1")
+        plt.setp(leg.get_texts(), color="white", fontsize=8)
+        plt.setp(leg.get_title(), color="white", fontsize=9, fontweight="bold")
+
+    st.pyplot(fig, use_container_width=True)
+
+    if show_details:
+        detail_cols = [c for c in ["Active", "Locked", "Lock Frequency", "Lock Time", "Unit", "Sponsor", "Sponser", "Equipment", "Tech", "NTC Area", "Start Time", "End Time", "Start Frequency (MHz)", "Center Frequency (MHz)", "End Frequency (MHz)", "Bandwidth (MHz)", "Power (W)", "Conflict Status", "ISM Notes", "Notes"] if c in chart_df.columns]
+        st.dataframe(chart_df[detail_cols] if detail_cols else chart_df, use_container_width=True, hide_index=True)
 
 
 # ---------------- Allocation Engine V47 ----------------
@@ -4796,295 +4978,6 @@ def ae_export_allocation_workbook(rows, needs_review, conflicts):
     return bio
 
 
-
-# ---------------- V54 consistent chart colors ----------------
-
-DEFAULT_PLOT_PALETTE = [
-    "#2F80ED", "#27AE60", "#F2994A", "#F2C94C", "#9B51E0",
-    "#EB5757", "#56CCF2", "#6FCF97", "#BB6BD9", "#F97316",
-    "#14B8A6", "#A3E635", "#60A5FA", "#F472B6", "#94A3B8",
-]
-
-
-def normalize_color_key(value):
-    s = str(value or "").strip()
-    return s if s and s.lower() not in ["none", "nan", "(blank)", "blank"] else "(blank)"
-
-
-def build_category_color_map(df, color_by="Tech", existing_map=None):
-    """
-    Build one shared color map. The legend and every rectangle/bar must use this exact map.
-    """
-    existing_map = existing_map or {}
-    if df is None or len(df) == 0 or color_by not in df.columns:
-        return existing_map
-
-    values = [normalize_color_key(v) for v in df[color_by].fillna("(blank)").astype(str).tolist()]
-    unique_vals = []
-    for v in values:
-        if v not in unique_vals:
-            unique_vals.append(v)
-
-    color_map = dict(existing_map)
-    next_idx = len(color_map)
-    for v in unique_vals:
-        if v not in color_map:
-            color_map[v] = DEFAULT_PLOT_PALETTE[next_idx % len(DEFAULT_PLOT_PALETTE)]
-            next_idx += 1
-    return color_map
-
-
-def color_for_row(row if 'row' in locals() else r, color_by, color_map):
-    try:
-        key = normalize_color_key(row.get(color_by, "(blank)"))
-    except Exception:
-        key = "(blank)"
-    return color_map.get(key, "#64748B")
-
-
-def add_color_by_control(df, key_prefix="plot"):
-    options = [c for c in ["Tech", "Unit", "Sponsor", "Sponser", "Equipment", "Conflict Status", "NTC Area"] if df is not None and c in df.columns]
-    if not options:
-        return "Tech" if df is not None and "Tech" in df.columns else (df.columns[0] if df is not None and len(df.columns) else None)
-    default_idx = options.index("Tech") if "Tech" in options else 0
-    return st.selectbox("Color boxes by", options, index=default_idx, key=f"{key_prefix}_color_by")
-
-
-def draw_manual_color_legend(color_map, title="Legend"):
-    if not color_map:
-        return
-    st.markdown(f"**{title}**")
-    items = []
-    for label, color in color_map.items():
-        items.append(
-            f'<span style="display:inline-flex;align-items:center;margin:0 10px 6px 0;">'
-            f'<span style="display:inline-block;width:13px;height:13px;background:{color};border:1px solid #dbeafe;margin-right:6px;"></span>'
-            f'<span style="font-size:0.82rem;">{label}</span></span>'
-        )
-    st.markdown("<div>" + "".join(items) + "</div>", unsafe_allow_html=True)
-
-
-
-# ---------------- V55 clean spectrum chart ----------------
-
-def get_first_existing_col(df, options):
-    if df is None:
-        return None
-    lower_map = {str(c).strip().lower(): c for c in df.columns}
-    for opt in options:
-        key = str(opt).strip().lower()
-        if key in lower_map:
-            return lower_map[key]
-    return None
-
-
-def v55_prepare_chart_df(df):
-    if df is None or len(df) == 0:
-        return pd.DataFrame()
-    out = df.copy()
-
-    center_col = get_first_existing_col(out, ["Center Frequency (MHz)", "Center Frequency", "CenterF", "Center MHz"])
-    start_col = get_first_existing_col(out, ["Start Frequency (MHz)", "Start Frequency", "StartF", "Start MHz"])
-    end_col = get_first_existing_col(out, ["End Frequency (MHz)", "End Frequency", "EndF", "End MHz"])
-    bw_col = get_first_existing_col(out, ["Bandwidth (MHz)", "Bandwidth", "BandwidthMHz", "BW MHz"])
-    start_time_col = get_first_existing_col(out, ["Start Time", "StartTime", "StartTimeOrig", "StartTimeDC"])
-    end_time_col = get_first_existing_col(out, ["End Time", "EndTime", "EndTimeOrig", "EndTimeDC"])
-
-    if center_col is None and start_col is not None and end_col is not None:
-        out["__CenterMHz"] = (pd.to_numeric(out[start_col], errors="coerce") + pd.to_numeric(out[end_col], errors="coerce")) / 2
-    elif center_col is not None:
-        out["__CenterMHz"] = pd.to_numeric(out[center_col], errors="coerce")
-    else:
-        out["__CenterMHz"] = None
-
-    if start_col is not None:
-        out["__StartMHz"] = pd.to_numeric(out[start_col], errors="coerce")
-    elif bw_col is not None:
-        out["__StartMHz"] = out["__CenterMHz"] - pd.to_numeric(out[bw_col], errors="coerce") / 2
-    else:
-        out["__StartMHz"] = out["__CenterMHz"]
-
-    if end_col is not None:
-        out["__EndMHz"] = pd.to_numeric(out[end_col], errors="coerce")
-    elif bw_col is not None:
-        out["__EndMHz"] = out["__CenterMHz"] + pd.to_numeric(out[bw_col], errors="coerce") / 2
-    else:
-        out["__EndMHz"] = out["__CenterMHz"]
-
-    if bw_col is not None:
-        out["__BandwidthMHz"] = pd.to_numeric(out[bw_col], errors="coerce")
-    else:
-        out["__BandwidthMHz"] = out["__EndMHz"] - out["__StartMHz"]
-
-    def to_hour(v, default):
-        if pd.isna(v):
-            return default
-        s = str(v).strip().lower()
-        try:
-            if ":" in s:
-                hh, mm = s.split(":")[:2]
-                return float(hh) + float(mm)/60.0
-            m = re.match(r"(\d+(?:\.\d+)?)(am|pm)?", s)
-            if m:
-                val = float(m.group(1))
-                suffix = m.group(2)
-                if suffix == "pm" and val < 12:
-                    val += 12
-                if suffix == "am" and val == 12:
-                    val = 0
-                return val
-        except Exception:
-            pass
-        return default
-
-    out["__StartHour"] = out[start_time_col].apply(lambda v: to_hour(v, 6)) if start_time_col else 6
-    out["__EndHour"] = out[end_time_col].apply(lambda v: to_hour(v, 20)) if end_time_col else 20
-
-    out = out.dropna(subset=["__StartMHz", "__EndMHz", "__CenterMHz"])
-    out = out[out["__EndMHz"] >= out["__StartMHz"]]
-    return out.reset_index(drop=True)
-
-
-def v55_assign_lanes(df, group_col):
-    """
-    Stack overlapping frequency boxes into separate visual lanes to reduce clutter.
-    """
-    if df is None or len(df) == 0:
-        return df
-    out = df.sort_values(["__StartMHz", "__EndMHz"]).copy()
-    lane_end = []
-    lanes = []
-    for _, row in out.iterrows():
-        placed = False
-        for lane_idx, last_end in enumerate(lane_end):
-            if float(row["__StartMHz"]) >= last_end:
-                lanes.append(lane_idx)
-                lane_end[lane_idx] = float(row["__EndMHz"])
-                placed = True
-                break
-        if not placed:
-            lanes.append(len(lane_end))
-            lane_end.append(float(row["__EndMHz"]))
-    out["__Lane"] = lanes
-    return out.sort_index()
-
-
-def v55_should_label(row, label_density, box_width_mhz):
-    if label_density == "Off":
-        return False
-    conflict_value = str(row.get("Conflict Status", row.get("ConflictStatus", ""))).lower()
-    is_conflict = "conflict" in conflict_value and "no conflict" not in conflict_value
-    if label_density == "Conflicts only":
-        return is_conflict
-    if label_density == "Major labels only":
-        return box_width_mhz >= 8
-    if label_density == "All labels":
-        return True
-    return False
-
-
-def render_clean_time_frequency_chart(df, title="Time × Frequency", default_color_by="Unit", key_prefix="v55"):
-    chart_df = v55_prepare_chart_df(df)
-    if chart_df is None or len(chart_df) == 0:
-        st.info("No valid frequency rows to plot.")
-        return
-
-    control_cols = st.columns([1.2, 1.2, 1, 1])
-    with control_cols[0]:
-        color_options = [c for c in ["Unit", "Tech", "Sponsor", "Sponser", "Equipment", "NTC Area", "Conflict Status"] if c in chart_df.columns]
-        if not color_options:
-            color_options = ["Unit"] if "Unit" in chart_df.columns else [chart_df.columns[0]]
-        default_idx = color_options.index(default_color_by) if default_color_by in color_options else 0
-        color_by = st.selectbox("Color by", color_options, index=default_idx, key=f"{key_prefix}_color_by")
-    with control_cols[1]:
-        label_density = st.selectbox(
-            "Label density",
-            ["Conflicts only", "Major labels only", "Off", "All labels"],
-            index=0,
-            key=f"{key_prefix}_label_density",
-        )
-    with control_cols[2]:
-        show_details = st.toggle("Show details table", value=True, key=f"{key_prefix}_show_details")
-    with control_cols[3]:
-        min_label_width = st.number_input("Min label width MHz", min_value=1.0, max_value=50.0, value=8.0, step=1.0, key=f"{key_prefix}_min_label_width")
-
-    color_map = build_category_color_map(chart_df, color_by)
-    lane_df = v55_assign_lanes(chart_df, color_by)
-
-    fig_height = max(4.5, min(10, 2.8 + lane_df["__Lane"].max() * 0.35 if "__Lane" in lane_df.columns and len(lane_df) else 4.5))
-    fig, ax = plt.subplots(figsize=(12.5, fig_height))
-    fig.patch.set_facecolor("#111827")
-    ax.set_facecolor("#111827")
-
-    y_height = 0.72
-    for _, row in lane_df.iterrows():
-        x0 = float(row["__StartMHz"])
-        x1 = float(row["__EndMHz"])
-        width = max(0.001, x1 - x0)
-        y = float(row.get("__Lane", 0))
-        color = color_for_row(row, color_by, color_map)
-        conflict_value = str(row.get("Conflict Status", row.get("ConflictStatus", ""))).lower()
-        edge_color = "#F87171" if ("conflict" in conflict_value and "no conflict" not in conflict_value) else "#D1D5DB"
-        line_width = 1.4 if edge_color == "#F87171" else 0.55
-
-        rect = plt.Rectangle(
-            (x0, y - y_height / 2),
-            width,
-            y_height,
-            facecolor=color,
-            edgecolor=edge_color,
-            linewidth=line_width,
-            alpha=0.92,
-        )
-        ax.add_patch(rect)
-
-        if v55_should_label(row, label_density, width) and width >= float(min_label_width):
-            ax.text(
-                x0 + width / 2,
-                y,
-                f'{float(row["__CenterMHz"]):.3f} MHz',
-                ha="center",
-                va="center",
-                fontsize=8,
-                fontweight="bold",
-                color="white",
-                clip_on=True,
-            )
-
-    xmin = float(lane_df["__StartMHz"].min())
-    xmax = float(lane_df["__EndMHz"].max())
-    pad = max(1.0, (xmax - xmin) * 0.04)
-    ax.set_xlim(xmin - pad, xmax + pad)
-    ax.set_ylim(-1, max(1, float(lane_df["__Lane"].max()) + 1))
-    ax.set_xlabel("Frequency (MHz)", color="white", fontweight="bold")
-    ax.set_ylabel("Visual lanes", color="white", fontweight="bold")
-    ax.set_title(f"{title} — by {color_by}", color="white", fontweight="bold", fontsize=14)
-    ax.grid(True, color="#374151", linestyle="--", linewidth=0.55, alpha=0.75)
-    ax.tick_params(colors="white")
-    for spine in ax.spines.values():
-        spine.set_color("#CBD5E1")
-
-    # Clean legend: only show categories visible in this chart.
-    handles = [
-        plt.Line2D([0], [0], marker="s", color="w", markerfacecolor=color, markersize=10, label=label)
-        for label, color in color_map.items()
-        if label in [normalize_color_key(v) for v in lane_df[color_by].fillna("(blank)").astype(str).tolist()]
-    ]
-    if handles:
-        leg = ax.legend(handles=handles, title=color_by, loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=True)
-        leg.get_frame().set_facecolor("#111827")
-        leg.get_frame().set_edgecolor("#CBD5E1")
-        plt.setp(leg.get_texts(), color="white", fontsize=8)
-        plt.setp(leg.get_title(), color="white", fontsize=9, fontweight="bold")
-
-    st.pyplot(fig, use_container_width=True)
-
-    if show_details:
-        details_cols = [c for c in ["Active", "Locked", "Lock Frequency", "Lock Time", "Unit", "Sponsor", "Sponser", "Equipment", "Tech", "NTC Area", "Start Time", "End Time", "Start Frequency (MHz)", "Center Frequency (MHz)", "End Frequency (MHz)", "Bandwidth (MHz)", "Power (W)", "Conflict Status", "ISM Notes", "Notes"] if c in chart_df.columns]
-        details = chart_df[details_cols].copy() if details_cols else chart_df.copy()
-        st.dataframe(details, use_container_width=True, hide_index=True)
-
-
 # ---------------- Plotting ----------------
 def style_axes(ax, dark=False):
     if dark:
@@ -5286,17 +5179,7 @@ def build_power_plot(df, group_field, dark, alpha_val, tick_major, tick_minor, l
     if tick_minor:
         x_min = math.floor(x_min/tick_minor)*tick_minor; x_max = math.ceil(x_max/tick_minor)*tick_minor
     y_max = float(d["PowerW"].max()); y_pad = max(1.0, .12*y_max)
-    
-# V54: shared color selector/map for all spectrum rectangles.
-try:
-    color_source_df = plot_df if "plot_df" in locals() else (active_sheet_df if "active_sheet_df" in locals() else current_df)
-    color_by = add_color_by_control(color_source_df, key_prefix="v54_spectrum")
-    color_map = build_category_color_map(color_source_df, color_by)
-except Exception:
-    color_by = "Tech"
-    color_map = {}
-
-fig, ax = plt.subplots(figsize=(14,7), dpi=150)
+    fig, ax = plt.subplots(figsize=(14,7), dpi=150)
     for _, row in d.iterrows():
         col = palette.get(str(row[group_field]), "#1f77b4")
         x, w, h = row["StartF"], row["EndF"]-row["StartF"], row["PowerW"]
@@ -6034,7 +5917,6 @@ with st.expander("Active / inactive frequency control", expanded=False):
         with c_on:
             if st.button("Set all active", use_container_width=True):
                 active_source_df["Active"] = True
-                active_source_df = recalc_start_end_from_center_bandwidth(active_source_df, original_df=None, only_changed=False)
                 replace_project_rows(project_id, active_source_df, logged_in_user)
                 save_version(project_id, active_source_df, logged_in_user, "Set all frequencies active")
                 log_audit_event(project_id, "set_all_frequencies_active", logged_in_user, {"rows": len(active_source_df)})
@@ -6044,7 +5926,6 @@ with st.expander("Active / inactive frequency control", expanded=False):
         with c_off:
             if st.button("Set all inactive", use_container_width=True):
                 active_source_df["Active"] = False
-                active_source_df = recalc_start_end_from_center_bandwidth(active_source_df, original_df=None, only_changed=False)
                 replace_project_rows(project_id, active_source_df, logged_in_user)
                 save_version(project_id, active_source_df, logged_in_user, "Set all frequencies inactive")
                 log_audit_event(project_id, "set_all_frequencies_inactive", logged_in_user, {"rows": len(active_source_df)})
@@ -6054,7 +5935,6 @@ with st.expander("Active / inactive frequency control", expanded=False):
         with c_lock:
             if st.button("Set all locked", use_container_width=True):
                 active_source_df["Locked"] = True
-                active_source_df = recalc_start_end_from_center_bandwidth(active_source_df, original_df=None, only_changed=False)
                 replace_project_rows(project_id, active_source_df, logged_in_user)
                 save_version(project_id, active_source_df, logged_in_user, "Set all rows locked")
                 log_audit_event(project_id, "set_all_rows_locked", logged_in_user, {"rows": len(active_source_df)})
@@ -6065,7 +5945,6 @@ with st.expander("Active / inactive frequency control", expanded=False):
             if st.button("Set all unlocked", use_container_width=True):
                 for col in ["Locked", "Lock Frequency", "Lock Time", "Lock Both"]:
                     active_source_df[col] = False
-                active_source_df = recalc_start_end_from_center_bandwidth(active_source_df, original_df=None, only_changed=False)
                 replace_project_rows(project_id, active_source_df, logged_in_user)
                 save_version(project_id, active_source_df, logged_in_user, "Set all rows unlocked")
                 log_audit_event(project_id, "set_all_rows_unlocked", logged_in_user, {"rows": len(active_source_df)})
@@ -6076,7 +5955,6 @@ with st.expander("Active / inactive frequency control", expanded=False):
             if st.button("Set frequency locked", use_container_width=True):
                 active_source_df["Locked"] = True
                 active_source_df["Lock Frequency"] = True
-                active_source_df = recalc_start_end_from_center_bandwidth(active_source_df, original_df=None, only_changed=False)
                 replace_project_rows(project_id, active_source_df, logged_in_user)
                 save_version(project_id, active_source_df, logged_in_user, "Set all frequency locked")
                 log_audit_event(project_id, "set_all_frequency_locked", logged_in_user, {"rows": len(active_source_df)})
@@ -6087,7 +5965,6 @@ with st.expander("Active / inactive frequency control", expanded=False):
             if st.button("Set time locked", use_container_width=True):
                 active_source_df["Locked"] = True
                 active_source_df["Lock Time"] = True
-                active_source_df = recalc_start_end_from_center_bandwidth(active_source_df, original_df=None, only_changed=False)
                 replace_project_rows(project_id, active_source_df, logged_in_user)
                 save_version(project_id, active_source_df, logged_in_user, "Set all time locked")
                 log_audit_event(project_id, "set_all_time_locked", logged_in_user, {"rows": len(active_source_df)})
@@ -6100,7 +5977,6 @@ with st.expander("Active / inactive frequency control", expanded=False):
                 active_source_df["Lock Frequency"] = True
                 active_source_df["Lock Time"] = True
                 active_source_df["Lock Both"] = True
-                active_source_df = recalc_start_end_from_center_bandwidth(active_source_df, original_df=None, only_changed=False)
                 replace_project_rows(project_id, active_source_df, logged_in_user)
                 save_version(project_id, active_source_df, logged_in_user, "Set all frequency and time locked")
                 log_audit_event(project_id, "set_all_both_locked", logged_in_user, {"rows": len(active_source_df)})
@@ -6343,4 +6219,672 @@ with st.expander("Version history / restore"):
 try:
     df_ready = prep_df(edited_df)
 except Exception as e:
-    st.er
+    st.error(f"Could not prepare table for plots: {e}"); st.stop()
+if df_ready.empty:
+    st.warning("No valid plot rows. Need Start/End Frequency and Power."); st.stop()
+
+grp_ut = unittech_field(df_ready)
+pal_equipment = make_palette(sorted(safe_group(df_ready["Equipment"]).unique().tolist()))
+pal_unittech = make_palette(sorted(safe_group(df_ready[grp_ut]).unique().tolist()))
+map_group_field = map_group_by if map_group_by in df_ready.columns else "Equipment"
+pal_map = make_palette(sorted(safe_group(df_ready[map_group_field]).unique().tolist()))
+ss, ee = df_ready["StartTime"].apply(parse_time_one), df_ready["EndTime"].apply(parse_time_one)
+bad_count = int((ss.isna() | ee.isna()).sum())
+base_conf_eq = detect_conflicts_generic(df_ready, "Equipment", guard_mhz)
+base_conf_ut = detect_conflicts_generic(df_ready, grp_ut, guard_mhz)
+m1, m2, m3 = st.columns(3)
+m1.metric("Time parse issues", bad_count); m2.metric("Equipment conflicts", 0 if base_conf_eq is None else len(base_conf_eq)); m3.metric(f"{grp_ut} conflicts", 0 if base_conf_ut is None else len(base_conf_ut))
+if bad_count:
+    with st.expander("Rows with time parse issues"):
+        st.dataframe(df_ready.loc[ss.isna() | ee.isna()], use_container_width=True)
+
+plot_df_conf = df_ready.copy()
+if auto_dc:
+    anchor = parse_time_one(dc_start)
+    if pd.isna(anchor):
+        st.error("Deconflict anchor is invalid. Use examples like 4am, 0730, 13:00, or 1:30pm.")
+        st.stop()
+    st.caption(f"Auto-deconflict anchor applied: {fmt_hhmm(float(anchor))}")
+    plot_df_conf = auto_deconflict_smart(
+        df_ready,
+        float(dc_window) * 3600,
+        float(dc_pad_min) * 60,
+        float(anchor),
+        float(guard_mhz),
+        allow_earlier,
+        priority_mode,
+    )
+    if "StartTimeDC" in plot_df_conf.columns:
+        plot_df_conf["StartTimeOrig"] = plot_df_conf["StartTime"]; plot_df_conf["EndTimeOrig"] = plot_df_conf["EndTime"]
+        plot_df_conf["StartTime"] = np.where(plot_df_conf["StartTimeDC"].notna(), plot_df_conf["StartTimeDC"], plot_df_conf["StartTime"])
+        plot_df_conf["EndTime"] = np.where(plot_df_conf["EndTimeDC"].notna(), plot_df_conf["EndTimeDC"], plot_df_conf["EndTime"])
+conf_eq = detect_conflicts_generic(plot_df_conf, "Equipment", guard_mhz)
+conf_ut = detect_conflicts_generic(plot_df_conf, grp_ut, guard_mhz)
+
+
+# Safety fallback for older merged code paths.
+try:
+    guard
+except NameError:
+    try:
+        guard = float(freq_guard)
+    except Exception:
+        try:
+            guard = float(plan_guard_mhz)
+        except Exception:
+            guard = 0.0
+
+
+
+
+# ---------------- V50 3-click daily workspace ----------------
+try:
+    v50_total_rows = len(current_df_all) if "current_df_all" in locals() else len(current_df)
+except Exception:
+    v50_total_rows = 0
+try:
+    v50_active_rows = active_count
+except Exception:
+    try:
+        v50_active_rows = len(apply_active_filter(current_df_all, False))
+    except Exception:
+        v50_active_rows = v50_total_rows
+try:
+    v50_inactive_rows = inactive_count
+except Exception:
+    v50_inactive_rows = max(0, v50_total_rows - v50_active_rows)
+
+st.markdown(
+    """
+    <div class="v50-hero">
+        <div class="v50-title">PCC6 Spectrum Management Workspace</div>
+        <div class="v50-subtitle">Designed around the 3-click rule: daily tasks are visible from the main screen, and major work areas are one click away.</div>
+        <div class="v50-pill-row">
+            <span class="v50-pill">1-click: active toggle</span><span class="v50-pill">1-click: lock frequency/time</span>
+            <span class="v50-pill">1-click: conflicts</span>
+            <span class="v50-pill">1-click: unit/sponsor views</span>
+            <span class="v50-pill">2-click: build allocation</span>
+            <span class="v50-pill">2-click: export workbook</span>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+try:
+    v50_conflict_count = len(conf_eq) + len(conf_ut)
+except Exception:
+    v50_conflict_count = 0
+
+st.markdown(
+    '<div class="v50-grid-5">'
+    + v50_metric_card("Active Rows", v50_active_rows, "Included in planning")
+    + v50_metric_card("Inactive", v50_inactive_rows, "Hidden unless enabled")
+    + v50_metric_card("Conflicts", v50_conflict_count, "Current working view")
+    + v50_metric_card("Project", project_status if "project_status" in locals() else "Working", "Workflow status")
+    + v50_metric_card("Quick Rule", "3 Clicks", "Core UX standard")
+    + '</div>',
+    unsafe_allow_html=True,
+)
+
+main_tab_dashboard, main_tab_allocation, main_tab_deconflict, main_tab_map, main_tab_import = st.tabs(
+    ["Dashboard", "Allocation Manager", "Deconfl
+iction", "Map", "Import / Export"]
+)
+
+with main_tab_dashboard:
+    v50_section("Daily Dashboard", "Most-used planning information should be visible without hunting through tabs.")
+    dcol1, dcol2 = st.columns([2, 1])
+    with dcol1:
+        try:
+            preview_df = v50_active_first(current_df.head(150))
+            st.dataframe(preview_df, use_container_width=True, hide_index=True)
+        except Exception:
+            st.info("Load or select a project to preview allocation rows.")
+    with dcol2:
+        st.markdown("**Fast checks**")
+        st.write("• Active systems")
+        st.write("• Current conflicts")
+        st.write("• NTC area reuse")
+        st.write("• Unit / Sponsor demand")
+        st.write("• Build allocation plan")
+
+with main_tab_allocation:
+    v50_section("Allocation Manager", "Turn systems on/off, lock equipment, edit rows, and search. Lock Frequency protects the frequency fields; Lock Time protects the time fields.")
+
+    st.markdown("**Clean Spectrum View**")
+    try:
+        clean_chart_source = current_df if "current_df" in locals() else active_sheet_df
+        render_clean_time_frequency_chart(clean_chart_source, title="Time × Frequency", default_color_by="Unit", key_prefix="v56_clean_allocation_chart")
+    except Exception as e:
+        st.info(f"Clean chart view unavailable until data is loaded: {e}")
+
+    st.markdown("**Frequency tools**")
+    if st.button("Recalculate Start/End from Center + Bandwidth", use_container_width=True, key="v56_recalc_freq_ranges"):
+        try:
+            recalc_source = current_df_all if "current_df_all" in locals() else current_df
+            recalced_df = recalc_all_unlocked_frequency_ranges(recalc_source)
+            replace_project_rows(project_id, recalced_df, logged_in_user)
+            save_version(project_id, recalced_df, logged_in_user, "Recalculated Start/End Frequency from Center Frequency and Bandwidth")
+            log_audit_event(project_id, "recalculate_frequency_ranges", logged_in_user, {"rows": len(recalced_df)})
+            st.success("Start and End Frequency recalculated for all unlocked rows.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Could not recalculate frequency ranges: {e}")
+
+    try:
+        alloc_df = v50_active_first(current_df)
+        search_text_v50 = st.text_input("Search allocations", placeholder="Unit, Sponsor, Equipment, Tech, Frequency...", key="v50_alloc_search")
+        if search_text_v50:
+            mask = alloc_df.astype(str).apply(lambda col: col.str.contains(search_text_v50, case=False, na=False)).any(axis=1)
+            alloc_df = alloc_df[mask]
+        st.dataframe(alloc_df, use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.info(f"Allocation manager unavailable until data is loaded: {e}")
+
+with main_tab_deconflict:
+    v50_section("Deconfliction", "Conflict report, reuse matrix, Unit view, and Sponsor view in one work area.")
+    dc1, dc2 = st.columns(2)
+    with dc1:
+        st.markdown("**Equipment / Tech Conflicts**")
+        try:
+            st.dataframe(conf_eq, use_container_width=True, hide_index=True)
+        except Exception:
+            st.info("No equipment conflict table available yet.")
+    with dc2:
+        st.markdown("**Unit / Sponsor Planning**")
+        try:
+            sponsor_col_v50 = "Sponsor" if "Sponsor" in current_df.columns else ("Sponser" if "Sponser" in current_df.columns else None)
+            group_col_v50 = sponsor_col_v50 or ("Unit" if "Unit" in current_df.columns else None)
+            if group_col_v50:
+                st.dataframe(current_df.groupby(group_col_v50, dropna=False).size().reset_index(name="Rows"), use_container_width=True, hide_index=True)
+            else:
+                st.info("No Unit/Sponsor columns found.")
+        except Exception:
+            st.info("Group summary unavailable.")
+
+with main_tab_map:
+    v50_section("Map", "North / Central / South and site-based planning views.")
+    st.info("Use the existing Map View section below for coverage, heat map, and export tools.")
+
+with main_tab_import:
+    v50_section("Import / Export", "Upload request tracker, approved frequency pool, build allocation, and download the workbook.")
+    st.info("Use the Build Allocation Plan panel below. It keeps Active as Column A, Locked as Column B, and preserves your spreadsheet column order.")
+
+st.markdown("---")
+
+# ---------------- Allocation Builder UI V47 ----------------
+with st.expander("Quick Action: Build Allocation Plan from Request Tracker + Approved Frequencies", expanded=False):
+    st.markdown(
+        "Upload the **Request Tracker** and **Approved Frequencies** file. "
+        "The engine will preserve your allocation workbook format and append planning fields to the right."
+    )
+    build_col1, build_col2 = st.columns(2)
+    with build_col1:
+        request_tracker_upload = st.file_uploader(
+            "Request Tracker (.xlsx)",
+            type=["xlsx"],
+            key="v47_request_tracker_upload",
+        )
+    with build_col2:
+        approved_freq_upload = st.file_uploader(
+            "Approved Frequencies (.xlsx)",
+            type=["xlsx"],
+            key="v47_approved_freq_upload",
+        )
+
+    st.caption("Allocation philosophy: Option B, North/Central/South reusable spectrum pools, geographic reuse first. Output keeps Active as Column A, then Locked, Lock Frequency, Lock Time, and Lock Both and preserves your spreadsheet column order.")
+    if st.button("Build Allocation Plan", type="primary", use_container_width=True, key="v47_build_allocation_plan"):
+        if request_tracker_upload is None or approved_freq_upload is None:
+            st.warning("Upload both the Request Tracker and Approved Frequencies file first.")
+        else:
+            try:
+                with st.spinner("Building allocation plan..."):
+                    output_bytes = build_allocation_workbook_from_request_and_pool(
+                        request_tracker_upload,
+                        approved_freq_upload,
+                    )
+                st.success("Allocation plan built successfully.")
+                st.download_button(
+                    "Download Allocation Plan",
+                    data=output_bytes,
+                    file_name="PCC6_Built_Allocation_Plan.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error(f"Allocation build failed: {e}")
+
+
+# ---------------- Clean Workspace Header V49 ----------------
+st.markdown(
+    f"""
+    <div class="v49-clean-title">
+        <h1>PCC6 Spectrum Planner</h1>
+        <p>Project: {project_name} · User: {user_name} · Status: {project_status}</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+st.markdown(
+    """
+    <div class="v49-clean-note">
+        Use the sidebar for project controls, import/export, and visibility filters. Use the tabs below for allocation views, conflicts, maps, planner tools, and admin functions.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+st.markdown("### Advanced Legacy Views")
+st.caption("Detailed legacy tabs remain available, but the primary workflow is now organized above around the 3-click rule.")
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
+    "Equipment Power",
+    "Equipment Deconfliction",
+    "Tech Power",
+    "Tech Deconfliction",
+    "Unit Deconfliction",
+    "Sponsor Deconfliction",
+    "Map View",
+    "Conflict Tables",
+    "Conflict Recommendations",
+    "Terrain / Range",
+    "Smart Planner",
+    "Band Utilization",
+    "Allocation Validation",
+])
+
+with tab1:
+    st.markdown(section_header_html("Equipment Power", "Frequency allocation versus power by equipment."), unsafe_allow_html=True)
+    fig = build_power_plot(df_ready, "Equipment", dark, alpha_val, tick_major, tick_minor, int(label_digits), pal_equipment, auto_thin, float(label_gap), high_power_top, power_style, float(outline_lwd), show_center_labels)
+    st.pyplot(fig, use_container_width=True)
+    st.download_button("Download PNG", fig_to_png_bytes(fig), "equipment_power.png", "image/png")
+
+with tab2:
+    st.markdown("""<div class="pcc-panel"><div class="pcc-panel-title">Time × Frequency — By Equipment</div><div class="pcc-panel-caption">Boxes display frequency only; equipment names remain in the legend.</div></div>""", unsafe_allow_html=True)
+    fig = build_deconflict_plot(plot_df_conf, "Equipment", pal_equipment, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_eq)
+    st.pyplot(fig, use_container_width=True)
+    st.download_button("Download PNG", fig_to_png_bytes(fig), "equipment_deconfliction.png", "image/png")
+
+with tab3:
+    fig = build_power_plot(df_ready, "Tech", dark, alpha_val, tick_major, tick_minor, int(label_digits), pal_unittech, auto_thin, float(label_gap), high_power_top, power_style, float(outline_lwd), show_center_labels)
+    st.pyplot(fig, use_container_width=True)
+    st.download_button("Download PNG", fig_to_png_bytes(fig), "tech_power.png", "image/png")
+
+with tab4:
+    st.markdown("""<div class="pcc-panel"><div class="pcc-panel-title">Time × Frequency — By Tech</div><div class="pcc-panel-caption">Boxes display frequency only; tech names remain in the legend.</div></div>""", unsafe_allow_html=True)
+    fig = build_deconflict_plot(plot_df_conf, "Tech", pal_unittech, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_ut)
+    st.pyplot(fig, use_container_width=True)
+    st.download_button("Download PNG", fig_to_png_bytes(fig), "tech_deconfliction.png", "image/png")
+
+
+with tab5:
+    st.markdown("""<div class="pcc-panel"><div class="pcc-panel-title">Deconfliction by Unit</div><div class="pcc-panel-caption">Frequency-only labels with unit legend and summary.</div></div>""", unsafe_allow_html=True)
+    st.markdown("#### Unit Deconfliction")
+    if "Unit" in plot_df_conf.columns:
+        unit_series = plot_df_conf["Unit"].fillna("").astype(str).str.strip()
+        if unit_series.replace(["", "None", "nan", "(blank)"], pd.NA).isna().all():
+            st.warning("Unit column exists, but it is blank. Re-upload the populated allocation workbook or fill Unit values before using this view.")
+        plot_df_conf_unit = plot_df_conf.copy()
+        plot_df_conf_unit["Unit"] = plot_df_conf_unit["Unit"].fillna("(blank)").replace({"": "(blank)", "None": "(blank)", "nan": "(blank)"})
+        pal_unit = make_palette(plot_df_conf_unit["Unit"].astype(str).unique())
+        conf_unit = detect_conflicts_generic(plot_df_conf_unit, "Unit", guard)
+        fig = build_deconflict_plot(plot_df_conf_unit, "Unit", pal_unit, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_unit)
+        st.pyplot(fig, use_container_width=True)
+        st.download_button("Download PNG", fig_to_png_bytes(fig), "unit_deconfliction.png", "image/png")
+        st.markdown("##### Unit summary")
+        st.dataframe(summary_by_group(df_ready, "Unit", conf_unit), use_container_width=True)
+    else:
+        st.info("No Unit column found.")
+
+with tab6:
+    st.markdown("""<div class="pcc-panel"><div class="pcc-panel-title">Deconfliction by Sponsor</div><div class="pcc-panel-caption">Frequency-only labels with sponsor legend and summary.</div></div>""", unsafe_allow_html=True)
+    st.markdown("#### Sponsor Deconfliction")
+    sponsor_col = "Sponsor" if "Sponsor" in plot_df_conf.columns else ("Sponser" if "Sponser" in plot_df_conf.columns else None)
+    if sponsor_col:
+        sponsor_series = plot_df_conf[sponsor_col].fillna("").astype(str).str.strip()
+        if sponsor_series.replace(["", "None", "nan", "(blank)"], pd.NA).isna().all():
+            st.warning("Sponsor column exists, but it is blank. Re-upload the populated allocation workbook or fill Sponsor values before using this view.")
+        plot_df_conf_sponsor = plot_df_conf.copy()
+        plot_df_conf_sponsor[sponsor_col] = plot_df_conf_sponsor[sponsor_col].fillna("(blank)").replace({"": "(blank)", "None": "(blank)", "nan": "(blank)"})
+        pal_sponsor = make_palette(plot_df_conf_sponsor[sponsor_col].astype(str).unique())
+        conf_sponsor = detect_conflicts_generic(plot_df_conf_sponsor, sponsor_col, guard)
+        fig = build_deconflict_plot(plot_df_conf_sponsor, sponsor_col, pal_sponsor, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_sponsor)
+        st.pyplot(fig, use_container_width=True)
+        st.download_button("Download PNG", fig_to_png_bytes(fig), "sponsor_deconfliction.png", "image/png")
+        st.markdown("##### Sponsor summary")
+        st.dataframe(summary_by_group(df_ready, sponsor_col, conf_sponsor), use_container_width=True)
+    else:
+        st.info("No Sponsor/Sponser column found.")
+
+
+with tab7:
+    st.markdown(section_header_html("Map View", "Mapped allocations, coverage circles, heat map, and export tools."), unsafe_allow_html=True)
+    st.markdown("#### Map View")
+    st.caption("Uses decimal-degree Latitude and Longitude columns. Coverage Radius draws circles using the selected units. Basemap uses free CARTO tiles; no Mapbox/Google token required.")
+    deck, map_df = build_map_deck(
+        df_ready,
+        map_group_field,
+        pal_map,
+        radius_units=radius_units,
+        show_coverage=show_coverage,
+        map_style=map_style_choice,
+        show_heatmap=show_heatmap,
+        heatmap_weight_by=heatmap_weight_by,
+    )
+
+    if deck is None:
+        st.info("No valid map rows found. Add Latitude and Longitude columns with decimal-degree values, for example 31.12345 and -97.12345.")
+        st.dataframe(
+            pd.DataFrame({
+                "Required": ["Latitude", "Longitude"],
+                "Recommended": ["Location", "Site Name"],
+                "Optional": ["Coverage Radius", "Antenna Height"],
+            }),
+            use_container_width=True,
+        )
+    else:
+        st.pydeck_chart(deck, use_container_width=True)
+
+        d1, d2, d3, d4 = st.columns(4)
+        with d1:
+            st.download_button(
+                "Download map HTML",
+                data=deck_to_html_bytes(deck),
+                file_name="spectrum_map.html",
+                mime="text/html",
+                use_container_width=True,
+            )
+        with d2:
+            st.download_button(
+                "Download map data CSV",
+                data=map_df.to_csv(index=False).encode("utf-8"),
+                file_name="spectrum_map_data.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with d3:
+            st.download_button(
+                "Download KML",
+                data=map_df_to_kml(map_df, project_name, radius_units, show_coverage),
+                file_name=f"{safe_storage_filename(project_name)}_map.kml",
+                mime="application/vnd.google-earth.kml+xml",
+                use_container_width=True,
+            )
+        with d4:
+            st.download_button(
+                "Download GeoJSON",
+                data=map_df_to_geojson(map_df, project_name),
+                file_name=f"{safe_storage_filename(project_name)}_map.geojson",
+                mime="application/geo+json",
+                use_container_width=True,
+            )
+
+        st.markdown("#### Map rows")
+        display_cols = [c for c in ["Active"] + [c for c in ["Equipment", "Tech", "Unit", "Latitude", "Longitude", "MGRS", "USNG", "Location", "SiteName", "CoverageRadius", "AntennaHeight", "CenterF", "PowerW", "StartTime", "EndTime"] if c in map_df.columns] if c in map_df.columns]
+        st.dataframe(map_df[display_cols], use_container_width=True)
+
+        with st.expander("Map congestion summary", expanded=False):
+            st.caption("Ranks locations/sites by row count, power, coverage, and unique frequencies.")
+            st.dataframe(map_congestion_summary(map_df), use_container_width=True)
+
+with tab8:
+    st.markdown(section_header_html("Conflict Tables", "Equipment, tech, unit, and sponsor conflict records."), unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### Equipment conflicts")
+        st.dataframe(conflict_summary(conf_eq), use_container_width=True)
+    with c2:
+        st.markdown(f"#### {grp_ut} conflicts")
+        st.dataframe(conflict_summary(conf_ut), use_container_width=True)
+
+    if auto_dc and "ShiftSec" in plot_df_conf.columns:
+        st.markdown("#### Auto-deconflict moves")
+        moves = plot_df_conf.copy()
+        moves["ShiftMin"] = moves["ShiftSec"].fillna(0) / 60
+        moves = moves.loc[abs(moves["ShiftMin"]) > .001]
+        cols = [c for c in ["Equipment", "Tech", "Unit", "StartF", "EndF", "StartTimeOrig", "EndTimeOrig", "StartTimeDC", "EndTimeDC", "ShiftMin", "Placed"] if c in moves.columns]
+        st.dataframe(moves[cols] if not moves.empty else pd.DataFrame({"Message": ["No rows were moved."]}), use_container_width=True)
+
+
+
+with tab9:
+    st.markdown("#### Conflict Severity + Recommended Actions")
+    rec_df = combined_conflict_recommendations(conf_eq, conf_ut, grp_ut)
+
+    if "Message" in rec_df.columns:
+        st.info(rec_df["Message"].iloc[0])
+    else:
+        high_count = int((rec_df["Severity"] == "High").sum())
+        medium_count = int((rec_df["Severity"] == "Medium").sum())
+        low_count = int((rec_df["Severity"] == "Low").sum())
+
+        c_high, c_med, c_low = st.columns(3)
+        c_high.metric("High", high_count)
+        c_med.metric("Medium", medium_count)
+        c_low.metric("Low", low_count)
+
+        st.dataframe(rec_df, use_container_width=True)
+
+        st.download_button(
+            "Download conflict recommendations CSV",
+            data=rec_df.to_csv(index=False).encode("utf-8"),
+            file_name="conflict_recommendations.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+        log_audit_event(project_id, "conflict_recommendations_viewed", logged_in_user, {"rows": len(rec_df)})
+
+
+
+
+with tab10:
+    st.markdown("#### Terrain / Range Planning")
+    st.caption("This is an approximate RF-horizon screening tool using antenna height and great-circle distance. It does not use live elevation terrain data yet.")
+
+    deck_for_range, map_df_for_range = build_map_deck(
+        df_ready,
+        map_group_field,
+        pal_map,
+        radius_units=radius_units,
+        show_coverage=show_coverage,
+        map_style=map_style_choice,
+        show_heatmap=False,
+        heatmap_weight_by=heatmap_weight_by,
+    )
+
+    if map_df_for_range is None or map_df_for_range.empty:
+        st.info("Add valid Latitude and Longitude values to use terrain/range analysis.")
+    else:
+        if "AntennaHeight" not in map_df_for_range.columns:
+            map_df_for_range["AntennaHeight"] = default_ant_height_m
+
+        range_df = build_range_analysis(map_df_for_range)
+
+        if "Message" in range_df.columns:
+            st.info(range_df["Message"].iloc[0])
+        else:
+            likely_count = int((range_df["LOS Screen"] == "Likely LOS").sum())
+            marginal_count = int((range_df["LOS Screen"] == "Marginal LOS").sum())
+            blocked_count = int((range_df["LOS Screen"] == "Beyond horizon").sum())
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Likely LOS", likely_count)
+            c2.metric("Marginal", marginal_count)
+            c3.metric("Beyond horizon", blocked_count)
+
+            if show_range_warning and blocked_count:
+                st.warning("Some paths are beyond the approximate RF horizon. Increase antenna height, add relay sites, or reduce path distance.")
+
+            st.dataframe(range_df, use_container_width=True)
+
+            d1, d2 = st.columns(2)
+            with d1:
+                st.download_button(
+                    "Download range analysis CSV",
+                    data=range_df.to_csv(index=False).encode("utf-8"),
+                    file_name="range_analysis.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            with d2:
+                st.download_button(
+                    "Download path GeoJSON",
+                    data=path_lines_geojson(range_df, map_df_for_range, project_name),
+                    file_name=f"{safe_storage_filename(project_name)}_paths.geojson",
+                    mime="application/geo+json",
+                    use_container_width=True,
+                )
+
+            log_audit_event(project_id, "range_analysis_viewed", logged_in_user, {"paths": len(range_df)})
+
+
+
+
+with tab11:
+    st.markdown(section_header_html("Smart Frequency Planner", "Recommended frequency moves and time-shift fallback actions."), unsafe_allow_html=True)
+    st.markdown("#### Smart Frequency Planner")
+    st.caption("Suggests alternate frequency ranges and time fallback actions using the current conflicts, planning band, guard band, and priority rules.")
+
+    plan_df = combined_smart_plan(
+        df_ready,
+        conf_eq,
+        conf_ut,
+        grp_ut,
+        plan_band_start,
+        plan_band_end,
+        float(plan_guard_mhz),
+        float(plan_step_mhz),
+        int(max_suggestions),
+    )
+
+    if "Message" in plan_df.columns:
+        st.info(plan_df["Message"].iloc[0])
+    else:
+        freq_moves = int((plan_df["Plan Type"] == "Frequency move").sum())
+        time_moves = int((plan_df["Plan Type"] == "Time move").sum())
+        c1, c2 = st.columns(2)
+        c1.metric("Frequency move options", freq_moves)
+        c2.metric("Time fallback options", time_moves)
+
+        st.dataframe(plan_df, use_container_width=True)
+
+        st.download_button(
+            "Download smart plan CSV",
+            data=plan_df.to_csv(index=False).encode("utf-8"),
+            file_name="smart_frequency_plan.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+        st.markdown("#### Apply selected recommendation")
+        st.warning("Review carefully before applying. This updates the active workbook sheet and saves a new version snapshot.")
+
+        option_labels = [
+            f"{i}: {row['Plan Type']} | {row['Move Group']} | {row['Conflict']} | {row['Reason'][:90]}"
+            for i, row in plan_df.reset_index(drop=True).iterrows()
+        ]
+
+        selected_plan_label = st.selectbox("Recommendation to apply", option_labels, key=f"apply_plan_select_{project_id}")
+        selected_plan_idx = int(selected_plan_label.split(":", 1)[0])
+        selected_plan = plan_df.reset_index(drop=True).iloc[selected_plan_idx].to_dict()
+
+        st.json({k: json_safe_value(v) for k, v in selected_plan.items()})
+
+        confirm_apply = st.checkbox(
+            "I reviewed this recommendation and want to apply it to the active sheet",
+            key=f"confirm_apply_smart_plan_{project_id}",
+        )
+
+        if st.button(
+            "Apply selected smart plan",
+            type="primary",
+            use_container_width=True,
+            disabled=not (can_edit and confirm_apply),
+        ):
+            try:
+                active_sheet = st.session_state.get("active_sheet_name") or list(edited_sheets.keys())[0]
+                base_sheet = edited_sheets.get(active_sheet, edited_df)
+
+                updated_sheet, apply_note = apply_smart_plan_to_sheet(base_sheet, selected_plan)
+
+                updated_sheets = dict(edited_sheets)
+                updated_sheets[active_sheet] = updated_sheet
+
+                save_project_sheets(project_id, updated_sheets, logged_in_user)
+                replace_project_rows(project_id, updated_sheet, logged_in_user)
+                version_no = save_version(project_id, updated_sheet, logged_in_user, f"Applied smart plan: {apply_note}")
+
+                st.session_state["workbook_sheets"] = updated_sheets
+                st.session_state["active_sheet_name"] = active_sheet
+
+                log_audit_event(
+                    project_id,
+                    "smart_plan_applied",
+                    logged_in_user,
+                    {
+                        "active_sheet": active_sheet,
+                        "version_no": version_no,
+                        "note": apply_note,
+                        "recommendation": {k: json_safe_value(v) for k, v in selected_plan.items()},
+                    },
+                )
+
+                st.success(f"{apply_note} Saved version {version_no}.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not apply selected recommendation: {e}")
+
+        log_audit_event(project_id, "smart_frequency_plan_generated", logged_in_user, {"rows": len(plan_df)})
+
+
+
+with tab12:
+    st.markdown("#### Band Utilization Dashboard")
+    band_df = band_utilization_summary(df_ready)
+    st.dataframe(band_df, use_container_width=True)
+    if "Message" not in band_df.columns:
+        st.download_button("Download band utilization CSV", band_df.to_csv(index=False).encode("utf-8"), "band_utilization.csv", "text/csv", use_container_width=True)
+
+with tab13:
+    st.markdown("#### Allocation Validation Center")
+    val_df = allocation_validation_summary(df_ready)
+    if "Message" in val_df.columns:
+        st.success(val_df["Message"].iloc[0])
+    else:
+        st.warning(f"{len(val_df)} allocation row(s) need review.")
+        st.dataframe(val_df, use_container_width=True)
+        st.download_button("Download validation issues CSV", val_df.to_csv(index=False).encode("utf-8"), "allocation_validation_issues.csv", "text/csv", use_container_width=True)
+
+    st.markdown("#### Geographic Reuse Quick Look")
+    reuse_df = geographic_reuse_summary(df_ready)
+    st.dataframe(reuse_df, use_container_width=True)
+    if "Message" not in reuse_df.columns:
+        st.download_button("Download geographic reuse CSV", reuse_df.to_csv(index=False).encode("utf-8"), "geographic_reuse.csv", "text/csv", use_container_width=True)
+
+
+# ---------------- Briefing export ----------------
+with st.expander("Export briefing PDF", expanded=False):
+    st.caption("Exports a PDF briefing using the current active plotting sheet and current plot settings.")
+    if st.button("Build PDF briefing", use_container_width=True):
+        try:
+            pdf_figs = [
+                build_power_plot(df_ready, "Equipment", dark, alpha_val, tick_major, tick_minor, int(label_digits), pal_equipment, auto_thin, float(label_gap), high_power_top, power_style, float(outline_lwd), show_center_labels),
+                build_deconflict_plot(plot_df_conf, "Equipment", pal_equipment, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_eq),
+                build_power_plot(df_ready, grp_ut, dark, alpha_val, tick_major, tick_minor, int(label_digits), pal_unittech, auto_thin, float(label_gap), high_power_top, power_style, float(outline_lwd), show_center_labels),
+                build_deconflict_plot(plot_df_conf, grp_ut, pal_unittech, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_ut),
+            ]
+            pdf_bytes = briefing_pdf_bytes(project_name, status_info, df_ready, conf_eq, conf_ut, pdf_figs)
+            for _fig in pdf_figs:
+                plt.close(_fig)
+            st.download_button(
+                "Download briefing PDF",
+                data=pdf_bytes,
+                file_name=f"{safe_storage_filename(project_name)}_briefing.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+            log_audit_event(project_id, "briefing_pdf_generated", logged_in_user, {"project": project_name})
+        except Exception as e:
+            st.error(f"Could not build PDF briefing: {e}")
