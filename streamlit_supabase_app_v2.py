@@ -6626,8 +6626,7 @@ with st.expander("Import / replace table from file or pasted CSV", expanded=(len
                 })
                 st.dataframe(mapping_preview, use_container_width=True)
                 if mgrs is None:
-                    st.info("MGRS/USNG conversion requires 
-adding `mgrs` to requirements. Without it, Latitude/Longitude must be provided directly.")
+                    st.info("MGRS/USNG conversion requires adding `mgrs` to requirements. Without it, Latitude/Longitude must be provided directly.")
 
             b1, b2 = st.columns(2)
             with b1:
