@@ -51,11 +51,6 @@
 # - V46: Full web-app polish: app shell, fixed top nav style, web cards, status badges, modern dashboard layout, and cleaner controls.
 # - V47: Adds allocation engine: upload Request Tracker + Approved Frequencies, build allocation plan, preserve workbook schema, export workbook.
 # - V48: Active column is always first; all other columns preserve the uploaded spreadsheet order.
-# - V49: Clean layout mode removes the cluttered command-dashboard mockup and keeps one simple workspace with tabs.
-# - V50: 3-click UX redesign with five primary work areas, quick actions, and daily-task dashboard.
-# - V51: Adds Locked column after Active; locked rows are included but frequency/time/bandwidth are protected from allocator changes.
-# - V52: Adds visible Lock Frequency / Lock Time / Lock Both controls and protects locked fields from Smart Planner changes.
-# - V53: Manual frequency edits auto-recalculate Start/End Frequency from Center Frequency and Bandwidth while respecting locks.
 
 import io
 import json
@@ -777,151 +772,6 @@ def apply_pcc6_dark_ui():
         .web-grid-4 { grid-template-columns: 1fr; }
     }
 
-    
-    /* V49 CLEAN MODE OVERRIDES */
-    .v49-clean-title {
-        border: 1px solid #223946;
-        background: linear-gradient(180deg, rgba(9,24,34,.96), rgba(5,14,20,.96));
-        border-radius: 10px;
-        padding: 1rem 1.1rem;
-        margin-bottom: .75rem;
-    }
-    .v49-clean-title h1 {
-        color: #f8fbff;
-        font-size: 1.55rem;
-        margin: 0;
-        padding: 0;
-        font-weight: 900;
-        letter-spacing: .02em;
-    }
-    .v49-clean-title p {
-        color: #9fb3bd;
-        font-size: .88rem;
-        margin: .25rem 0 0 0;
-    }
-    .v49-clean-note {
-        border-left: 4px solid #2f9cff;
-        background: rgba(47,156,255,.08);
-        padding: .65rem .8rem;
-        border-radius: 6px;
-        color: #dce8ee;
-        margin-bottom: .75rem;
-    }
-    /* calm down older dashboard styling */
-    .web-grid-4, .pcc-command-shell, .pcc-command-grid, .v45-filter-box {
-        display: none !important;
-    }
-
-    
-    /* V50 3-click UX cleanup */
-    .v50-hero {
-        border: 1px solid #233b49;
-        background: linear-gradient(180deg, rgba(8,24,34,.98), rgba(4,14,20,.98));
-        border-radius: 12px;
-        padding: 1rem;
-        margin-bottom: .8rem;
-        box-shadow: 0 14px 30px rgba(0,0,0,.28);
-    }
-    .v50-title {
-        color: #f8fbff;
-        font-size: 1.35rem;
-        font-weight: 950;
-        letter-spacing: .035em;
-        margin-bottom: .2rem;
-    }
-    .v50-subtitle {
-        color: #9fb3bd;
-        font-size: .86rem;
-    }
-    .v50-grid-5 {
-        display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: .65rem;
-        margin: .75rem 0;
-    }
-    .v50-action-card {
-        border: 1px solid #29495a;
-        background: #071923;
-        border-radius: 10px;
-        padding: .75rem;
-        min-height: 86px;
-    }
-    .v50-action-label {
-        color: #9fb3bd;
-        font-size: .72rem;
-        text-transform: uppercase;
-        letter-spacing: .06em;
-        font-weight: 850;
-    }
-    .v50-action-value {
-        color: #f8fbff;
-        font-size: 1.15rem;
-        font-weight: 900;
-        margin-top: .2rem;
-    }
-    .v50-action-note {
-        color: #7893a0;
-        font-size: .72rem;
-        margin-top: .22rem;
-    }
-    .v50-section {
-        border: 1px solid #223946;
-        background: linear-gradient(180deg, rgba(7,20,28,.96), rgba(4,13,19,.96));
-        border-radius: 10px;
-        padding: .85rem;
-        margin-bottom: .75rem;
-    }
-    .v50-section-title {
-        color: #f8fbff;
-        font-weight: 930;
-        text-transform: uppercase;
-        letter-spacing: .035em;
-        margin-bottom: .25rem;
-    }
-    .v50-section-caption {
-        color: #8fa8b3;
-        font-size: .78rem;
-        margin-bottom: .65rem;
-    }
-    .v50-pill-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: .4rem;
-        margin: .4rem 0 .7rem 0;
-    }
-    .v50-pill {
-        border: 1px solid #2a4a59;
-        background: rgba(12,35,51,.85);
-        color: #cfe4ee;
-        border-radius: 999px;
-        padding: .25rem .55rem;
-        font-size: .76rem;
-        font-weight: 750;
-    }
-    div[data-testid="stTabs"] [data-baseweb="tab-list"] {
-        gap: .25rem;
-        background: #06131a;
-        border: 1px solid #223946;
-        border-radius: 10px;
-        padding: .25rem;
-    }
-    div[data-testid="stTabs"] button[role="tab"] {
-        border-radius: 8px;
-        padding: .55rem .75rem;
-        font-weight: 800;
-    }
-    div[data-testid="stExpander"] {
-        border: 1px solid #223946 !important;
-        border-radius: 10px !important;
-        background: rgba(6,19,26,.65) !important;
-    }
-    @media (max-width: 1100px) {
-        .v50-grid-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-    @media (max-width: 650px) {
-        .v50-grid-5 { grid-template-columns: 1fr; }
-    }
-
     </style>
     """, unsafe_allow_html=True)
 
@@ -959,10 +809,6 @@ sb_admin = get_supabase_admin()
 
 APP_COLUMNS = [
     "Active",
-    "Locked",
-    "Lock Frequency",
-    "Lock Time",
-    "Lock Both",
     "Start Time", "End Time", "Equipment", "Center Frequency (MHz)",
     "Start Frequency (MHz)", "End Frequency (MHz)", "Bandwidth (MHz)",
     "Power (W)", "Power (dBm)", "Tech", "Unit", "Notes",
@@ -1044,9 +890,6 @@ STANDARD_RENAME = {
     "Grid": "MGRS",
     "Military Grid": "MGRS",
     "Active": "Active",
-    "Locked": "Locked",
-    "Lock": "Locked",
-    "Frequency Locked": "Locked",
     "Enabled": "Active",
     "In Use": "Active",
     "Use": "Active",
@@ -1464,9 +1307,6 @@ SMART_COLUMN_ALIASES = {
     "grid": "MGRS",
     "militarygrid": "MGRS",
     "active": "Active",
-    "locked": "Locked",
-    "lock": "Locked",
-    "frequencylocked": "Locked",
     "enabled": "Active",
     "inuse": "Active",
     "use": "Active",
@@ -1545,17 +1385,6 @@ def to_active_bool(value):
     return True
 
 
-
-def to_locked_bool(value):
-    """Convert common locked/unlocked spreadsheet values to bool."""
-    if pd.isna(value):
-        return False
-    s = str(value).strip().lower()
-    if s in ["true", "yes", "y", "1", "on", "locked", "lock"]:
-        return True
-    return False
-
-
 def active_label(value):
     return "Active" if to_active_bool(value) else "Inactive"
 
@@ -1573,39 +1402,30 @@ def apply_active_filter(df, show_inactive=False):
 
 def ensure_active_first_preserve_order(df, default=True):
     """
-    Keep uploaded spreadsheet column order exactly as provided,
-    except Active is always Column A and Locked is always Column B.
-    Active = include/exclude from planning.
-    Locked = include in planning but do not change frequency/time/bandwidth.
+    Keep the uploaded spreadsheet column order exactly as provided,
+    except Active is always moved/inserted as Column A.
     """
     if df is None:
         return df
     out = df.copy()
+    original_cols = list(out.columns)
 
-    # Normalize existing Active/Locked casing.
-    rename_map = {}
-    for c in list(out.columns):
-        if str(c).strip().lower() == "active" and c != "Active":
-            rename_map[c] = "Active"
-        if str(c).strip().lower() in ["locked", "frequencylocked", "lock"] and c != "Locked":
-            rename_map[c] = "Locked"
-    if rename_map:
-        out = out.rename(columns=rename_map)
+    active_cols = [c for c in original_cols if str(c).strip().lower() == "active"]
+    if active_cols:
+        active_col = active_cols[0]
+        if active_col != "Active":
+            out = out.rename(columns={active_col: "Active"})
+        cols = ["Active"] + [c for c in out.columns if c != "Active"]
+        return out[cols]
 
-    if "Active" not in out.columns:
-        out.insert(0, "Active", default)
-    if "Locked" not in out.columns:
-        insert_at = 1 if "Active" in out.columns else 0
-        out.insert(insert_at, "Locked", False)
-
-    cols = ["Active", "Locked"] + [c for c in out.columns if c not in ["Active", "Locked"]]
-    return out[cols]
+    out.insert(0, "Active", default)
+    return out
 
 
 def preserve_spreadsheet_order_with_active_first(df, reference_columns=None):
     """
-    Reorder dataframe so Active is first, Locked second, then columns follow
-    the original spreadsheet/reference order. Any new app/planning columns are appended.
+    Reorder a dataframe so Active is first, then columns follow the original
+    spreadsheet/reference order. Any new app/planning columns are appended.
     """
     if df is None:
         return df
@@ -1614,15 +1434,13 @@ def preserve_spreadsheet_order_with_active_first(df, reference_columns=None):
         ref = []
         seen = set()
         for c in reference_columns:
-            low = str(c).strip().lower()
-            cc = "Active" if low == "active" else ("Locked" if low in ["locked", "frequencylocked", "lock"] else c)
+            cc = "Active" if str(c).strip().lower() == "active" else c
             if cc in out.columns and cc not in seen:
                 ref.append(cc)
                 seen.add(cc)
-        ordered = ["Active", "Locked"] + [c for c in ref if c not in ["Active", "Locked"]] + [c for c in out.columns if c not in seen and c not in ["Active", "Locked"]]
+        ordered = ["Active"] + [c for c in ref if c != "Active"] + [c for c in out.columns if c not in seen and c != "Active"]
         return out[ordered]
     return out
-
 
 
 
@@ -1695,8 +1513,6 @@ def normalize_uploaded_df(df):
 
     if "Active" in out.columns:
         out["Active"] = out["Active"].apply(lambda v: True if pd.isna(v) else to_active_bool(v))
-    if "Locked" in out.columns:
-        out["Locked"] = out["Locked"].apply(to_locked_bool)
     out = ensure_active_first_preserve_order(out)
 
     # Preserve the user's spreadsheet order, with Active moved to Column A.
@@ -3927,321 +3743,10 @@ def section_header_html(title, caption="", right=""):
 
 
 
-
-# ---------------- V50 3-click layout helpers ----------------
-
-def v50_metric_card(label, value, note=""):
-    return f"""
-    <div class="v50-action-card">
-        <div class="v50-action-label">{label}</div>
-        <div class="v50-action-value">{value}</div>
-        <div class="v50-action-note">{note}</div>
-    </div>
-    """
-
-def v50_section(title, caption=""):
-    st.markdown(
-        f'<div class="v50-section-title">{title}</div><div class="v50-section-caption">{caption}</div>',
-        unsafe_allow_html=True,
-    )
-
-def v50_active_first(df):
-    try:
-        return ensure_active_first_preserve_order(df)
-    except Exception:
-        if df is None:
-            return df
-        out = df.copy()
-        if "Active" in out.columns:
-            return out[["Active"] + [c for c in out.columns if c != "Active"]]
-        out.insert(0, "Active", True)
-        return out
-
-
-
-def is_row_locked(row):
-    try:
-        if isinstance(row, dict):
-            value = row.get("Locked", row.get("Frequency Locked", False))
-        else:
-            value = row["Locked"] if "Locked" in row.index else (row["Frequency Locked"] if "Frequency Locked" in row.index else False)
-        return to_locked_bool(value)
-    except Exception:
-        return False
-
-
-
-def protect_locked_rows_after_planning(original_df, planned_df):
-    """
-    Safety guard: after any allocator/deconfliction step, restore protected fields
-    for Locked rows so those lines do not change.
-    """
-    if original_df is None or planned_df is None or "Locked" not in original_df.columns:
-        return planned_df
-    out = planned_df.copy()
-    protected_cols = [
-        "Start Time", "End Time",
-        "Start Frequency (MHz)", "Center Frequency (MHz)", "End Frequency (MHz)",
-        "Bandwidth (MHz)", "Power (W)",
-    ]
-    for idx in original_df.index:
-        try:
-            if to_locked_bool(original_df.loc[idx, "Locked"]):
-                for col in protected_cols:
-                    if col in original_df.columns and col in out.columns and idx in out.index:
-                        out.loc[idx, col] = original_df.loc[idx, col]
-        except Exception:
-            continue
-    return ensure_active_first_preserve_order(out)
-
-
-
-# ---------------- V52 lock controls override ----------------
-
-def ensure_active_first_preserve_order(df, default=True):
-    """
-    Control columns are always first:
-    Active | Locked | Lock Frequency | Lock Time | Lock Both
-    Then every other column stays in the uploaded spreadsheet order.
-    """
-    if df is None:
-        return df
-    out = df.copy()
-
-    rename_map = {}
-    for c in list(out.columns):
-        low = str(c).strip().lower()
-        if low == "active" and c != "Active":
-            rename_map[c] = "Active"
-        elif low in ["locked", "frequencylocked", "lock"] and c != "Locked":
-            rename_map[c] = "Locked"
-        elif low in ["lockfrequency", "lockfreq", "frequencylock", "freqlocked"] and c != "Lock Frequency":
-            rename_map[c] = "Lock Frequency"
-        elif low in ["locktime", "timelock", "timelocked"] and c != "Lock Time":
-            rename_map[c] = "Lock Time"
-        elif low in ["lockboth", "bothlocked", "lockfrequencyandtime"] and c != "Lock Both":
-            rename_map[c] = "Lock Both"
-    if rename_map:
-        out = out.rename(columns=rename_map)
-
-    defaults = {
-        "Active": default,
-        "Locked": False,
-        "Lock Frequency": False,
-        "Lock Time": False,
-        "Lock Both": False,
-    }
-    for col, val in defaults.items():
-        if col not in out.columns:
-            out[col] = val
-
-    for col in ["Active", "Locked", "Lock Frequency", "Lock Time", "Lock Both"]:
-        try:
-            if col == "Active":
-                out[col] = out[col].apply(lambda v: True if pd.isna(v) else to_active_bool(v))
-            else:
-                out[col] = out[col].apply(to_locked_bool)
-        except Exception:
-            pass
-
-    try:
-        both_mask = out["Lock Both"].apply(to_locked_bool)
-        out.loc[both_mask, "Locked"] = True
-        out.loc[both_mask, "Lock Frequency"] = True
-        out.loc[both_mask, "Lock Time"] = True
-    except Exception:
-        pass
-
-    control_cols = ["Active", "Locked", "Lock Frequency", "Lock Time", "Lock Both"]
-    return out[control_cols + [c for c in out.columns if c not in control_cols]]
-
-
-def preserve_spreadsheet_order_with_active_first(df, reference_columns=None):
-    if df is None:
-        return df
-    out = ensure_active_first_preserve_order(df)
-    control_cols = ["Active", "Locked", "Lock Frequency", "Lock Time", "Lock Both"]
-    if reference_columns:
-        alias = {
-            "active": "Active",
-            "locked": "Locked",
-            "frequencylocked": "Locked",
-            "lock": "Locked",
-            "lockfrequency": "Lock Frequency",
-            "lockfreq": "Lock Frequency",
-            "locktime": "Lock Time",
-            "lockboth": "Lock Both",
-        }
-        ref, seen = [], set()
-        for c in reference_columns:
-            cc = alias.get(str(c).strip().lower(), c)
-            if cc in out.columns and cc not in seen:
-                ref.append(cc)
-                seen.add(cc)
-        ordered = control_cols + [c for c in ref if c not in control_cols] + [c for c in out.columns if c not in seen and c not in control_cols]
-        return out[ordered]
-    return out
-
-
-def to_locked_bool(value):
-    if pd.isna(value):
-        return False
-    s = str(value).strip().lower()
-    return s in ["true", "yes", "y", "1", "on", "locked", "lock"]
-
-
-def is_frequency_locked(row):
-    try:
-        getv = row.get if hasattr(row, "get") else lambda k, d=False: d
-        return (
-            to_locked_bool(getv("Lock Both", False))
-            or to_locked_bool(getv("Lock Frequency", False))
-            or to_locked_bool(getv("Locked", False))
-            or to_locked_bool(getv("Frequency Locked", False))
-        )
-    except Exception:
-        return False
-
-
-def is_time_locked(row):
-    try:
-        getv = row.get if hasattr(row, "get") else lambda k, d=False: d
-        return (
-            to_locked_bool(getv("Lock Both", False))
-            or to_locked_bool(getv("Lock Time", False))
-            or to_locked_bool(getv("Locked", False))
-            or to_locked_bool(getv("Frequency Locked", False))
-        )
-    except Exception:
-        return False
-
-
-def protect_locked_rows_after_planning(original_df, planned_df):
-    """
-    Restore protected fields after any planner/deconfliction step.
-    Lock Frequency protects start/center/end frequency and bandwidth.
-    Lock Time protects start/end time.
-    Lock Both/Locked protect both.
-    """
-    if original_df is None or planned_df is None:
-        return planned_df
-    out = planned_df.copy()
-    freq_cols = ["Start Frequency (MHz)", "Center Frequency (MHz)", "End Frequency (MHz)", "Bandwidth (MHz)", "StartF", "CenterF", "EndF", "BandwidthMHz"]
-    time_cols = ["Start Time", "End Time", "StartTime", "EndTime"]
-    for idx in original_df.index:
-        try:
-            src_row = original_df.loc[idx]
-            if is_frequency_locked(src_row):
-                for col in freq_cols:
-                    if col in original_df.columns and col in out.columns and idx in out.index:
-                        out.loc[idx, col] = original_df.loc[idx, col]
-            if is_time_locked(src_row):
-                for col in time_cols:
-                    if col in original_df.columns and col in out.columns and idx in out.index:
-                        out.loc[idx, col] = original_df.loc[idx, col]
-        except Exception:
-            continue
-    return ensure_active_first_preserve_order(out)
-
-
-def smart_plan_allowed_by_locks(row, plan_type):
-    p = str(plan_type or "").strip().lower()
-    if "frequency" in p and is_frequency_locked(row):
-        return False
-    if "time" in p and is_time_locked(row):
-        return False
-    return True
-
-
-
-# ---------------- V53 manual frequency recalculation ----------------
-
-def _find_col_case_insensitive(df, names):
-    if df is None:
-        return None
-    lookup = {str(c).strip().lower(): c for c in df.columns}
-    for name in names:
-        key = str(name).strip().lower()
-        if key in lookup:
-            return lookup[key]
-    return None
-
-
-def recalc_start_end_from_center_bandwidth(df, original_df=None, only_changed=True):
-    """
-    When the user manually edits Center Frequency or Bandwidth,
-    update Start/End Frequency automatically:
-        Start = Center - Bandwidth/2
-        End   = Center + Bandwidth/2
-
-    Lock Frequency / Lock Both / Locked rows are protected.
-    """
-    if df is None:
-        return df
-
-    out = df.copy()
-
-    center_col = _find_col_case_insensitive(out, [
-        "Center Frequency (MHz)", "Center Frequency", "CenterF", "Center MHz"
-    ])
-    start_col = _find_col_case_insensitive(out, [
-        "Start Frequency (MHz)", "Start Frequency", "StartF", "Start MHz"
-    ])
-    end_col = _find_col_case_insensitive(out, [
-        "End Frequency (MHz)", "End Frequency", "EndF", "End MHz"
-    ])
-    bw_col = _find_col_case_insensitive(out, [
-        "Bandwidth (MHz)", "Bandwidth", "BandwidthMHz", "BW MHz"
-    ])
-
-    if center_col is None or start_col is None or end_col is None or bw_col is None:
-        return ensure_active_first_preserve_order(out)
-
-    for idx in out.index:
-        try:
-            row = out.loc[idx]
-
-            # Do not change protected frequency rows.
-            if is_frequency_locked(row):
-                continue
-
-            center = pd.to_numeric(row.get(center_col), errors="coerce")
-            bw = pd.to_numeric(row.get(bw_col), errors="coerce")
-
-            if pd.isna(center) or pd.isna(bw) or float(bw) <= 0:
-                continue
-
-            if only_changed and original_df is not None and idx in original_df.index:
-                old_center = pd.to_numeric(original_df.loc[idx].get(center_col), errors="coerce") if center_col in original_df.columns else None
-                old_bw = pd.to_numeric(original_df.loc[idx].get(bw_col), errors="coerce") if bw_col in original_df.columns else None
-                center_changed = not pd.isna(old_center) and abs(float(center) - float(old_center)) > 1e-9
-                bw_changed = not pd.isna(old_bw) and abs(float(bw) - float(old_bw)) > 1e-9
-                # If neither Center nor Bandwidth changed, leave Start/End alone.
-                if not center_changed and not bw_changed:
-                    continue
-
-            out.loc[idx, start_col] = round(float(center) - float(bw) / 2.0, 6)
-            out.loc[idx, end_col] = round(float(center) + float(bw) / 2.0, 6)
-
-        except Exception:
-            continue
-
-    return ensure_active_first_preserve_order(out)
-
-
-def recalc_all_unlocked_frequency_ranges(df):
-    """Bulk recalculation for all unlocked rows."""
-    return recalc_start_end_from_center_bandwidth(df, original_df=None, only_changed=False)
-
-
 # ---------------- Allocation Engine V47 ----------------
 
 ALLOCATION_ENGINE_COLUMNS = [
     "Active",
-    "Locked",
-    "Lock Frequency",
-    "Lock Time",
-    "Lock Both",
     "Start Time", "End Time", "Equipment", "Center Frequency (MHz)",
     "Start Frequency (MHz)", "End Frequency (MHz)", "Bandwidth (MHz)",
     "Power (W)", "Tech", "Unit", "Sponsor", "Latitude", "Longitude",
@@ -4644,10 +4149,6 @@ def build_allocation_workbook_from_request_and_pool(request_file, approved_file)
             ism_notes = "; ".join(notes) if notes else "Auto-assigned using approved pool and NTC area reuse"
             row = {
                 "Active": True,
-                "Locked": False,
-                "Lock Frequency": False,
-                "Lock Time": False,
-                "Lock Both": False,
                 "Start Time": "0600",
                 "End Time": "2000",
                 "Equipment": equipment,
@@ -4671,7 +4172,7 @@ def build_allocation_workbook_from_request_and_pool(request_file, approved_file)
                 "Allocation Status": allocation_status,
                 "Conflict Status": conflict_status,
                 "Reuse Group ID": f"{ae_band_label_for(center).replace(' ', '').replace('/', '-')}-{area.replace('/', '-')}-{int(round(center))}",
-                "Locked": locked == "Yes",
+                "Frequency Locked": locked,
                 "Priority": priority,
                 "Priority Score": priority_score,
                 "Source Sheet": source_sheet_name,
@@ -4705,7 +4206,7 @@ def ae_export_allocation_workbook(rows, needs_review, conflicts):
     default = wb.active
     wb.remove(default)
 
-    base_cols = ["Active", "Locked", "Lock Frequency", "Lock Time", "Lock Both"] + [c for c in ALLOCATION_ENGINE_COLUMNS if c not in ["Active", "Locked", "Lock Frequency", "Lock Time", "Lock Both"]] + ALLOCATION_ENGINE_APPEND_COLUMNS
+    base_cols = ["Active"] + [c for c in ALLOCATION_ENGINE_COLUMNS if c != "Active"] + ALLOCATION_ENGINE_APPEND_COLUMNS
     # Keep existing format first. App/helper-only fields stay far right.
     extra_cols = ["Allocation ID", "Request Band", "Channels Requested", "Request Status", "POC"]
 
@@ -4839,7 +4340,7 @@ def ae_export_allocation_workbook(rows, needs_review, conflicts):
         ["Priority", "Aviation/Safety, Mission Command, Experimental, Tactical Networks, Coalition/Partner"],
         ["Reuse", "North/Central/South reusable spectrum pools"],
         ["Conflict detection", "Bandwidth overlap inside same NTC Area"],
-        ["Locked", "Locked rows are included in planning but the allocator must not change frequency, bandwidth, start time, or end time."],
+        ["Frequency Locked", "Yes for Aviation/Safety and Mission Command"],
         ["Needs Review", "Missing bandwidth, missing area, no approved frequency match, high channel count"],
     ]:
         assump.append(row)
@@ -5780,21 +5281,20 @@ with st.expander("Active / inactive frequency control", expanded=False):
         active_source_df["Active"] = active_source_df["Active"].apply(to_active_bool)
         active_source_df["Status"] = active_source_df["Active"].apply(lambda x: "Active" if x else "Inactive")
 
-        display_cols = ["Active", "Locked", "Lock Frequency", "Lock Time", "Lock Both"] + [c for c in active_source_df.columns if c not in ["Active", "Locked", "Lock Frequency", "Lock Time", "Lock Both"]]
+        display_cols = ["Active"] + [c for c in active_source_df.columns if c != "Active"]
         edited_active_df = st.data_editor(
             active_source_df[display_cols],
             use_container_width=True,
             num_rows="fixed",
-            disabled=[c for c in display_cols if c not in ["Active", "Locked", "Lock Frequency", "Lock Time", "Lock Both"]],
+            disabled=[c for c in display_cols if c not in ["Active"]],
             key=f"active_editor_{project_id}",
         )
 
-        c_on, c_off, c_lock, c_unlock, c_lock_freq, c_lock_time, c_lock_both, c_save_active = st.columns(8)
+        c_on, c_off, c_save_active = st.columns(3)
 
         with c_on:
             if st.button("Set all active", use_container_width=True):
                 active_source_df["Active"] = True
-                active_source_df = recalc_start_end_from_center_bandwidth(active_source_df, original_df=None, only_changed=False)
                 replace_project_rows(project_id, active_source_df, logged_in_user)
                 save_version(project_id, active_source_df, logged_in_user, "Set all frequencies active")
                 log_audit_event(project_id, "set_all_frequencies_active", logged_in_user, {"rows": len(active_source_df)})
@@ -5804,67 +5304,10 @@ with st.expander("Active / inactive frequency control", expanded=False):
         with c_off:
             if st.button("Set all inactive", use_container_width=True):
                 active_source_df["Active"] = False
-                active_source_df = recalc_start_end_from_center_bandwidth(active_source_df, original_df=None, only_changed=False)
                 replace_project_rows(project_id, active_source_df, logged_in_user)
                 save_version(project_id, active_source_df, logged_in_user, "Set all frequencies inactive")
                 log_audit_event(project_id, "set_all_frequencies_inactive", logged_in_user, {"rows": len(active_source_df)})
                 st.warning("All rows set inactive.")
-                st.rerun()
-
-        with c_lock:
-            if st.button("Set all locked", use_container_width=True):
-                active_source_df["Locked"] = True
-                active_source_df = recalc_start_end_from_center_bandwidth(active_source_df, original_df=None, only_changed=False)
-                replace_project_rows(project_id, active_source_df, logged_in_user)
-                save_version(project_id, active_source_df, logged_in_user, "Set all rows locked")
-                log_audit_event(project_id, "set_all_rows_locked", logged_in_user, {"rows": len(active_source_df)})
-                st.success("All rows locked.")
-                st.rerun()
-
-        with c_unlock:
-            if st.button("Set all unlocked", use_container_width=True):
-                for col in ["Locked", "Lock Frequency", "Lock Time", "Lock Both"]:
-                    active_source_df[col] = False
-                active_source_df = recalc_start_end_from_center_bandwidth(active_source_df, original_df=None, only_changed=False)
-                replace_project_rows(project_id, active_source_df, logged_in_user)
-                save_version(project_id, active_source_df, logged_in_user, "Set all rows unlocked")
-                log_audit_event(project_id, "set_all_rows_unlocked", logged_in_user, {"rows": len(active_source_df)})
-                st.success("All rows unlocked.")
-                st.rerun()
-
-        with c_lock_freq:
-            if st.button("Set frequency locked", use_container_width=True):
-                active_source_df["Locked"] = True
-                active_source_df["Lock Frequency"] = True
-                active_source_df = recalc_start_end_from_center_bandwidth(active_source_df, original_df=None, only_changed=False)
-                replace_project_rows(project_id, active_source_df, logged_in_user)
-                save_version(project_id, active_source_df, logged_in_user, "Set all frequency locked")
-                log_audit_event(project_id, "set_all_frequency_locked", logged_in_user, {"rows": len(active_source_df)})
-                st.success("All frequencies locked.")
-                st.rerun()
-
-        with c_lock_time:
-            if st.button("Set time locked", use_container_width=True):
-                active_source_df["Locked"] = True
-                active_source_df["Lock Time"] = True
-                active_source_df = recalc_start_end_from_center_bandwidth(active_source_df, original_df=None, only_changed=False)
-                replace_project_rows(project_id, active_source_df, logged_in_user)
-                save_version(project_id, active_source_df, logged_in_user, "Set all time locked")
-                log_audit_event(project_id, "set_all_time_locked", logged_in_user, {"rows": len(active_source_df)})
-                st.success("All times locked.")
-                st.rerun()
-
-        with c_lock_both:
-            if st.button("Set both locked", use_container_width=True):
-                active_source_df["Locked"] = True
-                active_source_df["Lock Frequency"] = True
-                active_source_df["Lock Time"] = True
-                active_source_df["Lock Both"] = True
-                active_source_df = recalc_start_end_from_center_bandwidth(active_source_df, original_df=None, only_changed=False)
-                replace_project_rows(project_id, active_source_df, logged_in_user)
-                save_version(project_id, active_source_df, logged_in_user, "Set all frequency and time locked")
-                log_audit_event(project_id, "set_all_both_locked", logged_in_user, {"rows": len(active_source_df)})
-                st.success("All frequency and time fields locked.")
                 st.rerun()
 
         with c_save_active:
@@ -5872,14 +5315,6 @@ with st.expander("Active / inactive frequency control", expanded=False):
                 updated = active_source_df.copy()
                 if "Active" in edited_active_df.columns:
                     updated["Active"] = edited_active_df["Active"].apply(to_active_bool).values
-                for lock_col in ["Locked", "Lock Frequency", "Lock Time", "Lock Both"]:
-                    if lock_col in edited_active_df.columns:
-                        updated[lock_col] = edited_active_df[lock_col].apply(to_locked_bool).values
-                if "Lock Both" in updated.columns:
-                    both_mask = updated["Lock Both"].apply(to_locked_bool)
-                    for implied_col in ["Locked", "Lock Frequency", "Lock Time"]:
-                        if implied_col in updated.columns:
-                            updated.loc[both_mask, implied_col] = True
 
                 replace_project_rows(project_id, updated, logged_in_user)
                 save_version(project_id, updated, logged_in_user, "Updated active/inactive frequency status")
@@ -6160,136 +5595,8 @@ except NameError:
 
 
 
-
-# ---------------- V50 3-click daily workspace ----------------
-try:
-    v50_total_rows = len(current_df_all) if "current_df_all" in locals() else len(current_df)
-except Exception:
-    v50_total_rows = 0
-try:
-    v50_active_rows = active_count
-except Exception:
-    try:
-        v50_active_rows = len(apply_active_filter(current_df_all, False))
-    except Exception:
-        v50_active_rows = v50_total_rows
-try:
-    v50_inactive_rows = inactive_count
-except Exception:
-    v50_inactive_rows = max(0, v50_total_rows - v50_active_rows)
-
-st.markdown(
-    """
-    <div class="v50-hero">
-        <div class="v50-title">PCC6 Spectrum Management Workspace</div>
-        <div class="v50-subtitle">Designed around the 3-click rule: daily tasks are visible from the main screen, and major work areas are one click away.</div>
-        <div class="v50-pill-row">
-            <span class="v50-pill">1-click: active toggle</span><span class="v50-pill">1-click: lock frequency/time</span>
-            <span class="v50-pill">1-click: conflicts</span>
-            <span class="v50-pill">1-click: unit/sponsor views</span>
-            <span class="v50-pill">2-click: build allocation</span>
-            <span class="v50-pill">2-click: export workbook</span>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-try:
-    v50_conflict_count = len(conf_eq) + len(conf_ut)
-except Exception:
-    v50_conflict_count = 0
-
-st.markdown(
-    '<div class="v50-grid-5">'
-    + v50_metric_card("Active Rows", v50_active_rows, "Included in planning")
-    + v50_metric_card("Inactive", v50_inactive_rows, "Hidden unless enabled")
-    + v50_metric_card("Conflicts", v50_conflict_count, "Current working view")
-    + v50_metric_card("Project", project_status if "project_status" in locals() else "Working", "Workflow status")
-    + v50_metric_card("Quick Rule", "3 Clicks", "Core UX standard")
-    + '</div>',
-    unsafe_allow_html=True,
-)
-
-main_tab_dashboard, main_tab_allocation, main_tab_deconflict, main_tab_map, main_tab_import = st.tabs(
-    ["Dashboard", "Allocation Manager", "Deconfliction", "Map", "Import / Export"]
-)
-
-with main_tab_dashboard:
-    v50_section("Daily Dashboard", "Most-used planning information should be visible without hunting through tabs.")
-    dcol1, dcol2 = st.columns([2, 1])
-    with dcol1:
-        try:
-            preview_df = v50_active_first(current_df.head(150))
-            st.dataframe(preview_df, use_container_width=True, hide_index=True)
-        except Exception:
-            st.info("Load or select a project to preview allocation rows.")
-    with dcol2:
-        st.markdown("**Fast checks**")
-        st.write("• Active systems")
-        st.write("• Current conflicts")
-        st.write("• NTC area reuse")
-        st.write("• Unit / Sponsor demand")
-        st.write("• Build allocation plan")
-
-with main_tab_allocation:
-    v50_section("Allocation Manager", "Turn systems on/off, lock equipment, edit rows, and search. Lock Frequency protects the frequency fields; Lock Time protects the time fields. Manual Center Frequency or Bandwidth edits automatically update Start and End Frequency.")
-    
-    st.markdown("**Frequency tools**")
-    if st.button("Recalculate Start/End from Center + Bandwidth", use_container_width=True, key="v53_recalc_freq_ranges"):
-        try:
-            recalced_df = recalc_all_unlocked_frequency_ranges(current_df_all if "current_df_all" in locals() else current_df)
-            replace_project_rows(project_id, recalced_df, logged_in_user)
-            save_version(project_id, recalced_df, logged_in_user, "Recalculated Start/End Frequency from Center Frequency and Bandwidth")
-            log_audit_event(project_id, "recalculate_frequency_ranges", logged_in_user, {"rows": len(recalced_df)})
-            st.success("Start and End Frequency recalculated for all unlocked rows.")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Could not recalculate frequency ranges: {e}")
-
-try:
-        alloc_df = v50_active_first(current_df)
-        search_text_v50 = st.text_input("Search allocations", placeholder="Unit, Sponsor, Equipment, Tech, Frequency...", key="v50_alloc_search")
-        if search_text_v50:
-            mask = alloc_df.astype(str).apply(lambda col: col.str.contains(search_text_v50, case=False, na=False)).any(axis=1)
-            alloc_df = alloc_df[mask]
-        st.dataframe(alloc_df, use_container_width=True, hide_index=True)
-    except Exception as e:
-        st.info(f"Allocation manager unavailable until data is loaded: {e}")
-
-with main_tab_deconflict:
-    v50_section("Deconfliction", "Conflict report, reuse matrix, Unit view, and Sponsor view in one work area.")
-    dc1, dc2 = st.columns(2)
-    with dc1:
-        st.markdown("**Equipment / Tech Conflicts**")
-        try:
-            st.dataframe(conf_eq, use_container_width=True, hide_index=True)
-        except Exception:
-            st.info("No equipment conflict table available yet.")
-    with dc2:
-        st.markdown("**Unit / Sponsor Planning**")
-        try:
-            sponsor_col_v50 = "Sponsor" if "Sponsor" in current_df.columns else ("Sponser" if "Sponser" in current_df.columns else None)
-            group_col_v50 = sponsor_col_v50 or ("Unit" if "Unit" in current_df.columns else None)
-            if group_col_v50:
-                st.dataframe(current_df.groupby(group_col_v50, dropna=False).size().reset_index(name="Rows"), use_container_width=True, hide_index=True)
-            else:
-                st.info("No Unit/Sponsor columns found.")
-        except Exception:
-            st.info("Group summary unavailable.")
-
-with main_tab_map:
-    v50_section("Map", "North / Central / South and site-based planning views.")
-    st.info("Use the existing Map View section below for coverage, heat map, and export tools.")
-
-with main_tab_import:
-    v50_section("Import / Export", "Upload request tracker, approved frequency pool, build allocation, and download the workbook.")
-    st.info("Use the Build Allocation Plan panel below. It keeps Active as Column A, Locked as Column B, and preserves your spreadsheet column order.")
-
-st.markdown("---")
-
 # ---------------- Allocation Builder UI V47 ----------------
-with st.expander("Quick Action: Build Allocation Plan from Request Tracker + Approved Frequencies", expanded=False):
+with st.expander("Build Allocation Plan from Request Tracker + Approved Frequencies", expanded=False):
     st.markdown(
         "Upload the **Request Tracker** and **Approved Frequencies** file. "
         "The engine will preserve your allocation workbook format and append planning fields to the right."
@@ -6308,7 +5615,7 @@ with st.expander("Quick Action: Build Allocation Plan from Request Tracker + App
             key="v47_approved_freq_upload",
         )
 
-    st.caption("Allocation philosophy: Option B, North/Central/South reusable spectrum pools, geographic reuse first. Output keeps Active as Column A, then Locked, Lock Frequency, Lock Time, and Lock Both and preserves your spreadsheet column order.")
+    st.caption("Allocation philosophy: Option B, North/Central/South reusable spectrum pools, geographic reuse first. Output keeps Active as Column A and preserves your spreadsheet column order.")
     if st.button("Build Allocation Plan", type="primary", use_container_width=True, key="v47_build_allocation_plan"):
         if request_tracker_upload is None or approved_freq_upload is None:
             st.warning("Upload both the Request Tracker and Approved Frequencies file first.")
@@ -6331,28 +5638,106 @@ with st.expander("Quick Action: Build Allocation Plan from Request Tracker + App
                 st.error(f"Allocation build failed: {e}")
 
 
-# ---------------- Clean Workspace Header V49 ----------------
-st.markdown(
-    f"""
-    <div class="v49-clean-title">
-        <h1>PCC6 Spectrum Planner</h1>
-        <p>Project: {project_name} · User: {user_name} · Status: {project_status}</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-st.markdown(
-    """
-    <div class="v49-clean-note">
-        Use the sidebar for project controls, import/export, and visibility filters. Use the tabs below for allocation views, conflicts, maps, planner tools, and admin functions.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+# ---------------- PCC6 Command Dashboard ----------------
+st.markdown(section_header_html("Dashboard", "Operational overview for allocation, deconfliction, reuse, and validation."), unsafe_allow_html=True)
+
+dash_total = len(df_ready) if "df_ready" in locals() else len(current_df)
+dash_eq_conf = len(conf_eq) if "conf_eq" in locals() and conf_eq is not None else 0
+dash_ut_conf = len(conf_ut) if "conf_ut" in locals() and conf_ut is not None else 0
+
+left_col, main_col = st.columns([1.15, 7.85], gap="small")
+
+with left_col:
+    st.markdown('<div class="v45-filter-box"><div class="v45-filter-title">Filters</div>', unsafe_allow_html=True)
+    st.caption("Main filters are controlled in the sidebar. This panel mirrors the mockup layout.")
+    st.markdown("**Band**")
+    st.code(st.session_state.get("active_sheet_name", "Active band"), language=None)
+    st.markdown("**Date**")
+    st.code("Current project", language=None)
+    st.markdown("**Legend**")
+    try:
+        legend_items = list(pal_unittech.keys())[:12]
+        for item in legend_items:
+            st.markdown(f"• {item}")
+        st.caption(f"Total Tech Types: {len(pal_unittech)}")
+    except Exception:
+        st.caption("Legend unavailable until data is loaded.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with main_col:
+    st.markdown('<div class="v45-panel"><div class="v45-panel-title">Time × Frequency — By Tech ⓘ</div><div class="v45-panel-caption">Frequency values inside boxes. Names stay in legend.</div>', unsafe_allow_html=True)
+    try:
+        fig_dash = build_deconflict_plot(
+            plot_df_conf,
+            "Tech",
+            pal_unittech,
+            True,
+            tick_major,
+            tick_minor,
+            True,
+            box_label_min_height_min,
+            False,
+            moved_outline,
+            conf_ut,
+        )
+        st.pyplot(fig_dash, use_container_width=True)
+    except Exception as e:
+        st.info(f"Dashboard chart could not be rendered yet: {e}")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    unit_panel, sponsor_panel = st.columns(2, gap="small")
+
+    with unit_panel:
+        st.markdown('<div class="v45-panel"><div class="v45-panel-title">Deconfliction by Unit ⓘ</div>', unsafe_allow_html=True)
+        st.markdown(
+            render_metric_html(dash_total, dash_eq_conf, max(0, int(dash_eq_conf / 2))),
+            unsafe_allow_html=True,
+        )
+        try:
+            unit_df_dash = plot_df_conf.copy()
+            if "Unit" not in unit_df_dash.columns:
+                unit_df_dash["Unit"] = "(blank)"
+            unit_df_dash["Unit"] = unit_df_dash["Unit"].fillna("(blank)").replace({"": "(blank)", "None": "(blank)", "nan": "(blank)"})
+            conf_unit_dash = detect_conflicts_generic(unit_df_dash, "Unit", guard)
+            st.dataframe(command_dashboard_group_summary(df_ready, "Unit", conf_unit_dash), use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.info(f"Unit dashboard not available yet: {e}")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with sponsor_panel:
+        st.markdown('<div class="v45-panel"><div class="v45-panel-title">Deconfliction by Sponsor ⓘ</div>', unsafe_allow_html=True)
+        st.markdown(
+            render_metric_html(dash_total, dash_ut_conf, max(0, int(dash_ut_conf / 2))),
+            unsafe_allow_html=True,
+        )
+        try:
+            sponsor_col_dash = "Sponsor" if "Sponsor" in plot_df_conf.columns else ("Sponser" if "Sponser" in plot_df_conf.columns else None)
+            if sponsor_col_dash:
+                sponsor_df_dash = plot_df_conf.copy()
+                sponsor_df_dash[sponsor_col_dash] = sponsor_df_dash[sponsor_col_dash].fillna("(blank)").replace({"": "(blank)", "None": "(blank)", "nan": "(blank)"})
+                conf_sponsor_dash = detect_conflicts_generic(sponsor_df_dash, sponsor_col_dash, guard)
+                st.dataframe(command_dashboard_group_summary(df_ready, sponsor_col_dash, conf_sponsor_dash), use_container_width=True, hide_index=True)
+            else:
+                st.info("No Sponsor column found.")
+        except Exception as e:
+            st.info(f"Sponsor dashboard not available yet: {e}")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    try:
+        band_names = list(st.session_state.get("workbook_sheets", {}).keys())
+        if not band_names:
+            band_names = ["1350-1390", "1780-1850", "2025-2110", "2200-2300", "2310-2360", "2400-2490", "4400-4648.6", "4648.6-4940", "9200-10000", "14400-14830", "15150-15350", "15700-17700"]
+        band_cols = st.columns(min(len(band_names), 12))
+        active_band = st.session_state.get("active_sheet_name")
+        for i, b in enumerate(band_names[:12]):
+            css_class = "v45-chip v45-chip-active" if str(b) == str(active_band) or (active_band is None and i == 0) else "v45-chip"
+            band_cols[i].markdown(f'<div class="{css_class}">{b}</div>', unsafe_allow_html=True)
+    except Exception:
+        pass
+
+st.markdown("---")
 
 
-st.markdown("### Advanced Legacy Views")
-st.caption("Detailed legacy tabs remain available, but the primary workflow is now organized above around the 3-click rule.")
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
     "Equipment Power",
     "Equipment Deconfliction",
@@ -6376,8 +5761,7 @@ with tab1:
     st.download_button("Download PNG", fig_to_png_bytes(fig), "equipment_power.png", "image/png")
 
 with tab2:
-    st.markdown("""<div class="pcc-panel"><div class="pcc-panel-title">Time × Frequency — By Equipm
-ent</div><div class="pcc-panel-caption">Boxes display frequency only; equipment names remain in the legend.</div></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="pcc-panel"><div class="pcc-panel-title">Time × Frequency — By Equipment</div><div class="pcc-panel-caption">Boxes display frequency only; equipment names remain in the legend.</div></div>""", unsafe_allow_html=True)
     fig = build_deconflict_plot(plot_df_conf, "Equipment", pal_equipment, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_eq)
     st.pyplot(fig, use_container_width=True)
     st.download_button("Download PNG", fig_to_png_bytes(fig), "equipment_deconfliction.png", "image/png")
