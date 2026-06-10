@@ -6502,8 +6502,7 @@ with tab9:
         c_high, c_med, c_low = st.columns(3)
         c_high.metric("High", high_count)
         c_med.metric("Medium", medium_count)
-        c_low.m
-etric("Low", low_count)
+        c_low.metric("Low", low_count)
 
         st.dataframe(rec_df, use_container_width=True)
 
