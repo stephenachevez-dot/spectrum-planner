@@ -1,3 +1,5 @@
+# - V48.4: Fixes upload KeyError: 0 by safely handling single/list uploads and Excel sheet dictionaries.
+# - V48.3: Fixes normalize_uploaded_df by removing out.columns dependency completely.
 # - V48.2: Adds full upload/import traceback diagnostics and safer workbook import handling.
 # - V48.1: Stable Active/Locked import fix; skips helper sheets and preserves allocation sheet order.
 # - V47.5: Removes defaultdict from Frequency Reuse Matrix allocation build.
@@ -111,7 +113,7 @@ def safe_read_excel_workbook(uploaded_file):
     This wrapper exists so upload errors produce useful diagnostics.
     """
     try:
-        return pd.read_excel(uploaded_file, sheet_name=None)
+        return read_uploaded_table_any(uploaded_file)
     except Exception as exc:
         show_full_error("Excel read failed", exc)
         raise
@@ -1530,79 +1532,196 @@ def apply_active_filter(df, show_inactive=False):
 
 
 
+
+# ---------------- V48.4 robust upload helpers ----------------
+
+def as_single_uploaded_file(uploaded):
+    """
+    Streamlit file_uploader may return None, one UploadedFile, or a list.
+    This prevents KeyError: 0 when the object is not list-like.
+    """
+    if uploaded is None:
+        return None
+    if isinstance(uploaded, (list, tuple)):
+        return as_single_uploaded_file(uploaded) if len(uploaded) > 0 else None
+    return uploaded
+
+
+def read_uploaded_table_any(uploaded_file):
+    """
+    Reads CSV/XLSX safely.
+    For XLSX, returns a dict of sheet_name -> DataFrame.
+    For CSV, returns {"Uploaded": DataFrame}.
+    """
+    uf = as_single_uploaded_file(uploaded_file)
+    if uf is None:
+        return {}
+
+    name = str(getattr(uf, "name", "") or "").lower()
+
+    try:
+        if name.endswith(".csv"):
+            return {"Uploaded": pd.read_csv(uf)}
+        if name.endswith((".xlsx", ".xlsm", ".xls")):
+            sheets = read_uploaded_table_any(uf)
+            if isinstance(sheets, dict):
+                return sheets
+            return {"Uploaded": sheets}
+        # Fallback: try Excel first, then CSV.
+        try:
+            sheets = read_uploaded_table_any(uf)
+            return sheets if isinstance(sheets, dict) else {"Uploaded": sheets}
+        except Exception:
+            try:
+                uf.seek(0)
+            except Exception:
+                pass
+            return {"Uploaded": pd.read_csv(uf)}
+    except Exception as exc:
+        try:
+            st.error(f"Upload read failed: {type(exc).__name__}: {str(exc)}")
+            st.code(traceback.format_exc())
+        except Exception:
+            pass
+        raise
+
+
+def normalize_imported_workbook_sheets(sheets):
+    """
+    Normalize all non-helper workbook sheets. Does not assume sheets[0].
+    """
+    normalized = {}
+    if sheets is None:
+        return normalized
+
+    if isinstance(sheets, pd.DataFrame):
+        sheets = {"Uploaded": sheets}
+
+    for sheet_name, raw_df in dict(sheets).items():
+        try:
+            if "is_helper_sheet_name" in globals() and is_helper_sheet_name(sheet_name):
+                continue
+            if raw_df is None or len(getattr(raw_df, "columns", [])) == 0:
+                continue
+            # Keep sheet if it looks allocation-like OR if no helper function exists.
+            if "is_allocation_like_sheet" in globals():
+                if not is_allocation_like_sheet(raw_df):
+                    continue
+            normalized[str(sheet_name)] = normalize_uploaded_df(raw_df)
+        except Exception as exc:
+            try:
+                st.error(f"Sheet '{sheet_name}' failed: {type(exc).__name__}: {str(exc)}")
+                st.code(traceback.format_exc())
+            except Exception:
+                pass
+            raise
+
+    return normalized
+
+
 def normalize_uploaded_df(df):
-    """Normalize uploaded/pasted data and infer columns when a file has weak or shifted headers."""
-    out = smart_standardize_columns(df)
-    out = fill_latlon_from_mgrs(out)
+    """
+    Normalize imported/edited tables safely.
+
+    V48.3 fix:
+    - No dependency on out.columns.
+    - Active is Column A.
+    - Locked is Column B.
+    - All other columns remain in their current dataframe order.
+    """
+    if df is None:
+        return pd.DataFrame()
+
+    out = df.copy()
 
     # Drop fully empty rows/columns.
-    out = out.dropna(how="all").dropna(axis=1, how="all")
+    try:
+        out = out.dropna(axis=0, how="all").dropna(axis=1, how="all")
+    except Exception:
+        pass
 
-    # If required columns are missing or mostly empty, infer them from the data.
-    cols = list(out.columns)
+    # Normalize common column names without reordering the user's other columns.
+    rename_map = {}
+    for c in list(out.columns):
+        raw = str(c).strip()
+        low = raw.lower()
+        compact = re.sub(r"[^a-z0-9]+", "", low)
 
-    def mostly_empty(colname):
-        return colname not in out.columns or out[colname].isna().all() or (out[colname].astype("string").str.strip().replace("", pd.NA).isna().mean() > 0.85)
+        if compact == "active":
+            rename_map[c] = "Active"
+        elif compact in ["locked", "lock", "frequencylocked"]:
+            rename_map[c] = "Locked"
+        elif compact in ["starttime", "starttimeorig"]:
+            rename_map[c] = "Start Time"
+        elif compact in ["endtime", "endtimeorig"]:
+            rename_map[c] = "End Time"
+        elif compact in ["equipment", "system", "systemplatform"]:
+            rename_map[c] = "Equipment"
+        elif compact in ["centerfrequencymhz", "centerfrequency", "centerfreqmhz", "centerf"]:
+            rename_map[c] = "Center Frequency (MHz)"
+        elif compact in ["startfrequencymhz", "startfrequency", "startfreqmhz", "startf"]:
+            rename_map[c] = "Start Frequency (MHz)"
+        elif compact in ["endfrequencymhz", "endfrequency", "endfreqmhz", "endf"]:
+            rename_map[c] = "End Frequency (MHz)"
+        elif compact in ["bandwidthmhz", "bandwidth", "bw"]:
+            rename_map[c] = "Bandwidth (MHz)"
+        elif compact in ["powerw", "powerwatts", "power"]:
+            rename_map[c] = "Power (W)"
+        elif compact in ["powerdbm", "dbm"]:
+            rename_map[c] = "Power (dBm)"
+        elif compact == "tech":
+            rename_map[c] = "Tech"
+        elif compact == "unit":
+            rename_map[c] = "Unit"
+        elif compact in ["sponsor", "sponser"]:
+            rename_map[c] = "Sponsor"
+        elif compact == "latitude":
+            rename_map[c] = "Latitude"
+        elif compact == "longitude":
+            rename_map[c] = "Longitude"
+        elif compact in ["location", "ntclocation"]:
+            rename_map[c] = "Location"
+        elif compact in ["antennheight", "antennaheight"]:
+            rename_map[c] = "Antenna Height"
+        elif compact in ["coverageradius", "radius"]:
+            rename_map[c] = "Coverage Radius"
+        elif compact in ["sitename", "site"]:
+            rename_map[c] = "Site Name"
+        elif compact in ["notes", "note"]:
+            rename_map[c] = "Notes"
+        elif compact in ["mgrs", "gridmgrs", "grid"]:
+            rename_map[c] = "MGRS"
+        elif compact == "usng":
+            rename_map[c] = "USNG"
 
-    # Time columns: first two columns that parse like times.
-    time_scores = []
-    for c in cols:
-        parsed = out[c].apply(parse_time_one)
-        score = parsed.notna().mean() if len(parsed) else 0
-        if score >= 0.50:
-            time_scores.append((c, score))
-    if mostly_empty("Start Time") and len(time_scores) >= 1:
-        out["Start Time"] = out[time_scores[0][0]]
-    if mostly_empty("End Time") and len(time_scores) >= 2:
-        out["End Time"] = out[time_scores[1][0]]
+    if rename_map:
+        out = out.rename(columns=rename_map)
 
-    # Numeric frequency/power candidates.
-    numeric_candidates = []
-    for c in cols:
-        nums = parse_number_series(out[c])
-        score = nums.notna().mean() if len(nums) else 0
-        med = nums.median(skipna=True)
-        numeric_candidates.append((c, score, med))
+    # Add/normalize Active and Locked.
+    if "Active" not in out.columns:
+        out.insert(0, "Active", True)
+    else:
+        try:
+            out["Active"] = out["Active"].apply(lambda v: to_bool_flag(v, True) if "to_bool_flag" in globals() else bool(v))
+        except Exception:
+            pass
 
-    # Center frequency: frequency-like column, usually values > 20 MHz and not power.
-    freq_like = [(c, s, m) for c, s, m in numeric_candidates if s >= 0.50 and pd.notna(m) and m > 20]
-    if mostly_empty("Center Frequency (MHz)") and freq_like:
-        # Prefer column names containing center/frequency/freq, otherwise the first freq-like column.
-        named = [x for x in freq_like if any(k in str(x[0]).lower() for k in ["center", "frequency", "freq"])]
-        out["Center Frequency (MHz)"] = out[(named or freq_like)[0][0]]
+    if "Locked" not in out.columns:
+        insert_at = 1 if "Active" in out.columns else 0
+        out.insert(insert_at, "Locked", False)
+    else:
+        try:
+            out["Locked"] = out["Locked"].apply(lambda v: to_bool_flag(v, False) if "to_bool_flag" in globals() else bool(v))
+        except Exception:
+            pass
 
-    # Equipment: text column that is not a time column and has repeated non-numeric values.
-    if mostly_empty("Equipment"):
-        time_cols = {x[0] for x in time_scores}
-        text_scores = []
-        for c in cols:
-            if c in time_cols:
-                continue
-            as_text = out[c].astype("string").str.strip()
-            nonblank = as_text.replace("", pd.NA).notna().mean()
-            numeric_score = parse_number_series(out[c]).notna().mean()
-            if nonblank >= 0.50 and numeric_score < 0.50:
-                text_scores.append((c, nonblank))
-        if text_scores:
-            out["Equipment"] = out[text_scores[0][0]]
+    # Final safe order: Active, Locked, everything else as-is.
+    ordered_cols = ["Active", "Locked"]
+    for c in out.columns:
+        if c not in ordered_cols:
+            ordered_cols.append(c)
 
-    # Bandwidth and Power defaults if absent.
-    if mostly_empty("Bandwidth (MHz)"):
-        out["Bandwidth (MHz)"] = None
-    if mostly_empty("Power (W)"):
-        out["Power (W)"] = 1
-
-    for c in APP_COLUMNS:
-        if c not in out.columns:
-            out[c] = None
-
-    if "Active" in out.columns:
-        out["Active"] = out["Active"].apply(lambda v: True if pd.isna(v) else to_active_bool(v))
-
-    out = ensure_active_locked_first(out)
-    out = ensure_active_locked_first(out)
-    preferred = ["Active", "Locked"] + [c for c in out.columns if c not in ["Active", "Locked"]]
-    return out[preferred].reset_index(drop=True)
+    return out[ordered_cols].reset_index(drop=True)
 
 def app_to_internal(df):
     out = df.copy()
@@ -6234,38 +6353,4 @@ with tab13:
     if "Message" in val_df.columns:
         st.success(val_df["Message"].iloc[0])
     else:
-        st.warning(f"{len(val_df)} allocation row(s) need review.")
-        st.dataframe(val_df, use_container_width=True)
-        st.download_button("Download validation issues CSV", val_df.to_csv(index=False).encode("utf-8"), "allocation_validation_issues.csv", "text/csv", use_container_width=True)
-
-    st.markdown("#### Geographic Reuse Quick Look")
-    reuse_df = geographic_reuse_summary(df_ready)
-    st.dataframe(reuse_df, use_container_width=True)
-    if "Message" not in reuse_df.columns:
-        st.download_button("Download geographic reuse CSV", reuse_df.to_csv(index=False).encode("utf-8"), "geographic_reuse.csv", "text/csv", use_container_width=True)
-
-
-# ---------------- Briefing export ----------------
-with st.expander("Export briefing PDF", expanded=False):
-    st.caption("Exports a PDF briefing using the current active plotting sheet and current plot settings.")
-    if st.button("Build PDF briefing", use_container_width=True):
-        try:
-            pdf_figs = [
-                build_power_plot(df_ready, "Equipment", dark, alpha_val, tick_major, tick_minor, int(label_digits), pal_equipment, auto_thin, float(label_gap), high_power_top, power_style, float(outline_lwd), show_center_labels),
-                build_deconflict_plot(plot_df_conf, "Equipment", pal_equipment, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_eq),
-                build_power_plot(df_ready, grp_ut, dark, alpha_val, tick_major, tick_minor, int(label_digits), pal_unittech, auto_thin, float(label_gap), high_power_top, power_style, float(outline_lwd), show_center_labels),
-                build_deconflict_plot(plot_df_conf, grp_ut, pal_unittech, dark, tick_major, tick_minor, box_labels, box_label_min_height_min, show_shift_label, moved_outline, conf_ut),
-            ]
-            pdf_bytes = briefing_pdf_bytes(project_name, status_info, df_ready, conf_eq, conf_ut, pdf_figs)
-            for _fig in pdf_figs:
-                plt.close(_fig)
-            st.download_button(
-                "Download briefing PDF",
-                data=pdf_bytes,
-                file_name=f"{safe_storage_filename(project_name)}_briefing.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-            )
-            log_audit_event(project_id, "briefing_pdf_generated", logged_in_user, {"project": project_name})
-        except Exception as e:
-            st.error(f"Could not build PDF briefing: {e}")
+        st.warning(f"{len(val_df)} allocatio
