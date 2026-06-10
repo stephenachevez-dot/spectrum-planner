@@ -6687,8 +6687,7 @@ with st.expander("Active / inactive frequency control", expanded=False):
             key=f"active_editor_{project_id}",
         )
 
-        c_on, c_off, 
-c_save_active = st.columns(3)
+        c_on, c_off, c_save_active = st.columns(3)
 
         with c_on:
             if st.button("Set all active", use_container_width=True):
