@@ -1,3 +1,4 @@
+# - V48.2: Adds full upload/import traceback diagnostics and safer workbook import handling.
 # - V48.1: Stable Active/Locked import fix; skips helper sheets and preserves allocation sheet order.
 # - V47.5: Removes defaultdict from Frequency Reuse Matrix allocation build.
 # streamlit_supabase_app_v2.py
@@ -85,6 +86,44 @@ from supabase import create_client
 
 st.set_page_config(page_title="Spectrum Planner", page_icon="📡", layout="wide", initial_sidebar_state="expanded")
 
+
+
+
+# ---------------- V48.2 diagnostics helpers ----------------
+
+def show_full_error(prefix, exc):
+    """Show complete exception details inside Streamlit instead of hiding the real error."""
+    try:
+        st.error(f"{prefix}: {type(exc).__name__}: {str(exc)}")
+        st.code(traceback.format_exc())
+    except Exception:
+        st.error(f"{prefix}: {exc}")
+
+
+def safe_sheet_name(name):
+    s = str(name or "").strip()
+    return s if s else "Sheet"
+
+
+def safe_read_excel_workbook(uploaded_file):
+    """
+    Read an uploaded workbook and return {sheet_name: DataFrame}.
+    This wrapper exists so upload errors produce useful diagnostics.
+    """
+    try:
+        return pd.read_excel(uploaded_file, sheet_name=None)
+    except Exception as exc:
+        show_full_error("Excel read failed", exc)
+        raise
+
+
+def is_valid_import_df(df):
+    if df is None:
+        return False
+    try:
+        return len(df.columns) > 0
+    except Exception:
+        return False
 
 
 # ---------------- V48.1 stable Active / Locked helpers ----------------
@@ -1561,12 +1600,10 @@ def normalize_uploaded_df(df):
         out["Active"] = out["Active"].apply(lambda v: True if pd.isna(v) else to_active_bool(v))
 
     out = ensure_active_locked_first(out)
-    preferred = ["Active", "Locked"] + [
-        c for c in uploaded_column_order
-        if c in out.columns and c not in ["Active", "Locked"]
-    ]
-    preferred += [c for c in out.columns if c not in preferred]
+    out = ensure_active_locked_first(out)
+    preferred = ["Active", "Locked"] + [c for c in out.columns if c not in ["Active", "Locked"]]
     return out[preferred].reset_index(drop=True)
+
 def app_to_internal(df):
     out = df.copy()
     out.columns = [INTERNAL_RENAME.get(str(c), str(c)) for c in out.columns]
@@ -3789,6 +3826,28 @@ def section_header_html(title, caption="", right=""):
 
 
 
+
+def safe_normalize_workbook_sheets_for_import(sheets):
+    """
+    Normalize workbook sheets for import while skipping dashboard/helper sheets.
+    Returns a dict of sheet_name -> normalized_df.
+    """
+    normalized = {}
+    for sheet_name, raw_df in sheets.items():
+        try:
+            if is_helper_sheet_name(sheet_name):
+                continue
+            if not is_valid_import_df(raw_df):
+                continue
+            if not is_allocation_like_sheet(raw_df):
+                continue
+            normalized[safe_sheet_name(sheet_name)] = normalize_uploaded_df(raw_df)
+        except Exception as exc:
+            show_full_error(f"Sheet import failed for {sheet_name}", exc)
+            raise
+    return normalized
+
+
 # ---------------- Allocation Engine V47 ----------------
 
 ALLOCATION_ENGINE_COLUMNS = [
@@ -5415,7 +5474,7 @@ with st.expander("Import / replace table from file or pasted CSV", expanded=(len
                     st.session_state["pending_upload_sig"] = file_sig
 
             except Exception as e:
-                st.error(f"Upload failed: {e}")
+                show_full_error("Upload failed", e)
 
         if st.session_state.get("pending_upload_sheets_dict") is not None:
             sheets_dict = st.session_state["pending_upload_sheets_dict"]
@@ -5697,7 +5756,7 @@ with st.expander("Build Allocation Plan from Request Tracker + Approved Frequenc
                     use_container_width=True,
                 )
             except Exception as e:
-                st.error(f"Allocation build failed: {e}")
+                show_full_error("Allocation build failed", e)
 
 
 # ---------------- PCC6 Command Dashboard ----------------
