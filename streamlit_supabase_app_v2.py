@@ -33,6 +33,43 @@ st.set_page_config(page_title="Spectrum Planner", page_icon="📡", layout="wide
 
 
 
+
+
+# ---------------- V49.2 layout protection CSS ----------------
+
+st.markdown("""
+<style>
+/* Keep the workbook tab bar visible and usable */
+div[data-baseweb="tab-list"] {
+    position: sticky;
+    top: 0;
+    z-index: 999;
+    background: var(--background-color);
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+    border-bottom: 1px solid rgba(128,128,128,0.25);
+}
+
+/* Prevent giant editor/expander sections from swallowing the page */
+section.main div[data-testid="stExpander"] {
+    margin-bottom: 0.75rem;
+}
+
+/* Keep data editors at a reasonable height so navigation remains reachable */
+div[data-testid="stDataFrame"],
+div[data-testid="stDataEditor"] {
+    max-height: 520px;
+    overflow: auto;
+}
+
+/* Make main workbook title easier to find */
+h1, h2, h3 {
+    scroll-margin-top: 5rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 # ---------------- V48.2 diagnostics helpers ----------------
 
 def show_full_error(prefix, exc):
@@ -4567,6 +4604,160 @@ def v491_export_plan(master, needs):
     return output.getvalue()
 
 
+
+# ---------------- V49.3 Auto Deconflict by Frequency ----------------
+
+def v493_norm(x):
+    try:
+        if x is None or pd.isna(x): return ""
+    except Exception:
+        if x is None: return ""
+    return str(x).strip()
+
+def v493_bool(x, default=False):
+    s=v493_norm(x).lower()
+    if s in ["true","yes","y","1","on","locked","active"]: return True
+    if s in ["false","no","n","0","off","unlocked","inactive"]: return False
+    return default
+
+def v493_float(x, default=None):
+    try:
+        if x is None or pd.isna(x): return default
+    except Exception: pass
+    try:
+        m=re.search(r"-?\d+(?:\.\d+)?", str(x).replace(",",""))
+        return float(m.group(0)) if m else default
+    except Exception: return default
+
+def v493_find_col(df, names):
+    if df is None: return None
+    lookup={re.sub(r"[^a-z0-9]+","",str(c).lower()):c for c in df.columns}
+    for n in names:
+        k=re.sub(r"[^a-z0-9]+","",str(n).lower())
+        if k in lookup: return lookup[k]
+    for n in names:
+        k=re.sub(r"[^a-z0-9]+","",str(n).lower())
+        for lk,c in lookup.items():
+            if k and (k in lk or lk in k): return c
+    return None
+
+def v493_time_min(x):
+    s=v493_norm(x).lower()
+    if not s: return None
+    try:
+        if ':' in s:
+            h,m=s.split(':')[:2]; return int(float(h))*60+int(float(m))
+        m=re.match(r"(\d+(?:\.\d+)?)(am|pm)?",s)
+        if not m: return None
+        val=float(m.group(1)); suf=m.group(2)
+        if val>=100 and suf is None:
+            return int(val//100)*60+int(val%100)
+        if suf=='pm' and val<12: val+=12
+        if suf=='am' and val==12: val=0
+        return int(val*60)
+    except Exception: return None
+
+def v493_time_overlap(a1,a2,b1,b2):
+    a1,a2,b1,b2=map(v493_time_min,[a1,a2,b1,b2])
+    if None in [a1,a2,b1,b2]: return True
+    return max(a1,b1)<min(a2,b2)
+
+def v493_area(x):
+    s=v493_norm(x).lower()
+    if 'north' in s: return 'North'
+    if 'central' in s or 'center' in s: return 'Central'
+    if 'south' in s: return 'South'
+    return v493_norm(x) or 'NTC Ft Irwin'
+
+def v493_ranges_overlap(a1,a2,b1,b2,guard=0.0):
+    return max(a1-guard,b1)<min(a2+guard,b2)
+
+def v493_locked(row):
+    for k in ['Locked','Lock Frequency','Lock Both']:
+        if k in row.index and v493_bool(row.get(k),False): return True
+    return False
+
+def v493_pool(df):
+    cc=v493_find_col(df,['Center Frequency (MHz)','Center Frequency','Frequency'])
+    bwc=v493_find_col(df,['Bandwidth (MHz)','Bandwidth','BW'])
+    ec=v493_find_col(df,['Equipment','System'])
+    tc=v493_find_col(df,['Tech','Technology'])
+    if cc is None: return []
+    seen=set(); out=[]
+    for _,r in df.iterrows():
+        c=v493_float(r.get(cc),None)
+        if c is None: continue
+        bw=v493_float(r.get(bwc),0.0) if bwc else 0.0
+        key=(round(c,6),round(bw,6))
+        if key in seen: continue
+        seen.add(key)
+        out.append({'center':c,'bw':bw,'equipment':v493_norm(r.get(ec)) if ec else '', 'tech':v493_norm(r.get(tc)) if tc else ''})
+    return sorted(out,key=lambda p:p['center'])
+
+def v493_clear(df,idx,center,bw,cols,guard):
+    s=center-bw/2; e=center+bw/2; row=df.loc[idx]
+    for j,o in df.iterrows():
+        if j==idx: continue
+        if cols['active'] and not v493_bool(o.get(cols['active']),True): continue
+        if cols['area']:
+            a=v493_area(row.get(cols['area'])); b=v493_area(o.get(cols['area']))
+            if a!=b and a in ['North','Central','South'] and b in ['North','Central','South']:
+                continue
+        if cols['st'] and cols['et'] and not v493_time_overlap(row.get(cols['st']),row.get(cols['et']),o.get(cols['st']),o.get(cols['et'])):
+            continue
+        os=v493_float(o.get(cols['sf']),None) if cols['sf'] else None
+        oe=v493_float(o.get(cols['ef']),None) if cols['ef'] else None
+        oc=v493_float(o.get(cols['cf']),None) if cols['cf'] else None
+        obw=v493_float(o.get(cols['bw']),None) if cols['bw'] else None
+        if os is None or oe is None:
+            if oc is not None and obw is not None: os=oc-obw/2; oe=oc+obw/2
+            else: continue
+        if v493_ranges_overlap(s,e,os,oe,guard): return False
+    return True
+
+def auto_deconflict_by_frequency_v493(df, guard_mhz=0.0):
+    if df is None or df.empty: return df, pd.DataFrame()
+    out=df.copy()
+    cols={
+        'active':v493_find_col(out,['Active']),
+        'cf':v493_find_col(out,['Center Frequency (MHz)','Center Frequency','Frequency']),
+        'sf':v493_find_col(out,['Start Frequency (MHz)','Start Frequency','StartF']),
+        'ef':v493_find_col(out,['End Frequency (MHz)','End Frequency','EndF']),
+        'bw':v493_find_col(out,['Bandwidth (MHz)','Bandwidth','BW']),
+        'st':v493_find_col(out,['Start Time','Start']),
+        'et':v493_find_col(out,['End Time','End']),
+        'area':v493_find_col(out,['NTC Area','Area','Location']),
+        'eq':v493_find_col(out,['Equipment','System']),
+        'tech':v493_find_col(out,['Tech','Technology']),
+        'notes':v493_find_col(out,['Notes'])}
+    if cols['cf'] is None or cols['bw'] is None: raise ValueError('Requires Center Frequency and Bandwidth columns.')
+    if cols['sf'] is None: out['Start Frequency (MHz)']=None; cols['sf']='Start Frequency (MHz)'
+    if cols['ef'] is None: out['End Frequency (MHz)']=None; cols['ef']='End Frequency (MHz)'
+    if cols['notes'] is None: out['Notes']=''; cols['notes']='Notes'
+    pool=v493_pool(out); changes=[]
+    for idx,row in out.iterrows():
+        if cols['active'] and not v493_bool(row.get(cols['active']),True): continue
+        if v493_locked(row): continue
+        bw=v493_float(row.get(cols['bw']),None); old=v493_float(row.get(cols['cf']),None)
+        if bw is None or bw<=0 or old is None: continue
+        if v493_clear(out,idx,old,bw,cols,guard_mhz): continue
+        eqkey=re.sub(r'[^a-z0-9]+','',v493_norm(row.get(cols['eq'])).lower()) if cols['eq'] else ''
+        def score(p):
+            pkey=re.sub(r'[^a-z0-9]+','',(p.get('equipment','')+' '+p.get('tech','')).lower())
+            return (-100000 if eqkey and (eqkey in pkey or pkey in eqkey) else 0)+abs((p.get('bw') or bw)-bw)*100+abs(p['center']-old)
+        for cand in sorted(pool,key=score):
+            new=float(cand['center'])
+            if abs(new-old)<1e-9: continue
+            if v493_clear(out,idx,new,bw,cols,guard_mhz):
+                out.at[idx,cols['cf']]=round(new,6)
+                out.at[idx,cols['sf']]=round(new-bw/2,6)
+                out.at[idx,cols['ef']]=round(new+bw/2,6)
+                note=v493_norm(out.at[idx,cols['notes']])
+                out.at[idx,cols['notes']]=(note+' | '+f'Auto frequency deconflict: moved center {old} -> {round(new,6)} MHz').strip(' |')
+                changes.append({'Row':int(idx)+1,'Equipment':row.get(cols['eq']) if cols['eq'] else '', 'Old Center Frequency (MHz)':old,'New Center Frequency (MHz)':round(new,6),'Bandwidth (MHz)':bw,'Action':'Moved frequency; time unchanged'})
+                break
+    return out,pd.DataFrame(changes)
+
 # ---------------- Allocation Engine V47 ----------------
 
 ALLOCATION_ENGINE_COLUMNS = [
@@ -6108,6 +6299,49 @@ with st.expander("Row-level edit history", expanded=False):
 
 
 
+
+# ---------------- V49.3 Frequency Auto-Deconfliction UI ----------------
+with st.expander("Auto Deconflict by Frequency", expanded=False):
+    st.caption("Moves only unlocked active rows to a clear frequency. Start Time and End Time stay unchanged.")
+    guard_mhz_v493 = st.number_input("Guard band / separation to protect (MHz)", min_value=0.0, max_value=100.0, value=0.0, step=0.1, key="v493_guard_mhz")
+    if st.button("Auto deconflict by frequency", use_container_width=True, key="v493_auto_freq_deconflict"):
+        try:
+            target_df_v493 = active_sheet_df.copy() if "active_sheet_df" in locals() else current_df.copy()
+            new_df_v493, changes_v493 = auto_deconflict_by_frequency_v493(target_df_v493, guard_mhz=guard_mhz_v493)
+            if changes_v493.empty:
+                st.info("No frequency moves were needed or no clear alternate frequency was found.")
+            else:
+                st.success(f"Proposed {len(changes_v493)} frequency move(s).")
+                st.dataframe(changes_v493, use_container_width=True, hide_index=True)
+                st.session_state["v493_pending_frequency_deconflict_df"] = new_df_v493
+                st.session_state["v493_pending_frequency_deconflict_changes"] = changes_v493
+        except Exception as e:
+            st.error(f"Auto frequency deconflict failed: {type(e).__name__}: {str(e)}")
+            try: st.code(traceback.format_exc())
+            except Exception: pass
+    if "v493_pending_frequency_deconflict_df" in st.session_state:
+        confirm_apply_v493 = st.checkbox("I reviewed the frequency deconfliction changes and want to apply them", key="v493_confirm_apply")
+        if st.button("Apply frequency deconfliction to active sheet", use_container_width=True, key="v493_apply_frequency_deconflict"):
+            if not confirm_apply_v493:
+                st.warning("Check the review box before applying changes.")
+            else:
+                try:
+                    applied_df_v493 = st.session_state["v493_pending_frequency_deconflict_df"]
+                    if "project_id" in locals() and "logged_in_user" in locals():
+                        replace_project_rows(project_id, applied_df_v493, logged_in_user)
+                        save_version(project_id, applied_df_v493, logged_in_user, "Auto deconflict by frequency")
+                        log_audit_event(project_id, "auto_deconflict_by_frequency", logged_in_user, {"rows_moved": len(st.session_state.get("v493_pending_frequency_deconflict_changes", []))})
+                        st.success("Frequency deconfliction applied and saved.")
+                        del st.session_state["v493_pending_frequency_deconflict_df"]
+                        if "v493_pending_frequency_deconflict_changes" in st.session_state: del st.session_state["v493_pending_frequency_deconflict_changes"]
+                        st.rerun()
+                    else:
+                        st.error("Project save context was not found. Changes were not applied.")
+                except Exception as e:
+                    st.error(f"Could not apply frequency deconfliction: {type(e).__name__}: {str(e)}")
+                    try: st.code(traceback.format_exc())
+                    except Exception: pass
+
 with st.expander("Active / inactive frequency control", expanded=False):
     st.caption("Turn off frequencies you are not using. Inactive rows remain saved but are excluded from plots, conflicts, smart planner, maps, and dashboards unless 'Show inactive frequencies' is enabled.")
 
@@ -6286,7 +6520,8 @@ with st.expander("Import / replace table from file or pasted CSV", expanded=(len
                     st.success("Pasted CSV saved.")
                     st.rerun()
             except Exception as e:
-                st.error(f"Could not parse pasted CSV: {e}")
+    
+            st.error(f"Could not parse pasted CSV: {e}")
 
 
 st.subheader("Shared allocation workbook")
