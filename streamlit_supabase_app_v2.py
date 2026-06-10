@@ -1,3 +1,58 @@
+# - V48: Adds Active as Column A and Locked as Column B while preserving spreadsheet column order.
+# - V47.5: Removes defaultdict from Frequency Reuse Matrix allocation build.
+# streamlit_supabase_app_v2.py
+# Spectrum Planner — Streamlit + Supabase
+# JSON-backed, polished, and safer deconfliction.
+# Fixes:
+# - Avoids Supabase column mismatch by saving allocation rows in row_data JSONB.
+# - Power plot center-frequency labels are near the top inside boxes.
+# - Deconfliction labels are inside boxes.
+# - Improved scheduler only separates rows that actually overlap in frequency.
+# - Uses Supabase Auth login/signup instead of one shared password.
+# - Adds admin user management with roles: admin, editor, viewer, disabled.
+# - Adds legends to every plot tab.
+# - Keeps uploaded preview data in session state until saved.
+# - Cleans Excel/Pandas values before saving versions to Supabase JSON.
+# - Adds Map View tab using Latitude/Longitude and optional coverage circles.
+# - Adds stronger thin black outlines to separate overlapping visual bands.
+# - Saves original uploaded CSV/XLSX files to Supabase Storage for download after logout/login.
+# - Adds admin-only buttons to delete version history and clear the shared allocation table.
+# - Saves/restores all Excel workbook sheets as project tabs.
+# - Adds download buttons for map HTML and map data CSV.
+# - Restores admin-only buttons to delete version history and clear shared allocation table.
+# - Fixes Auto Deconflict Anchor so changing the anchor time repacks the schedule.
+# - Shows workbook-tab persistence status and saves all tabs permanently to Supabase.
+# - Fixes NaN/Inf JSON errors when saving workbook sheets.
+# - Adds admin-only project deletion for old projects.
+# - Adds approval workflow, audit trail, and PDF briefing export.
+# - Fixes missing map HTML download helper.
+# - Adds project-level member permissions so admins control who can access each project.
+# - Adds KML export for map points/coverage and richer GIS-ready site popups.
+# - Adds live collaboration dashboard: online users, activity feed, and optional auto-refresh.
+# - Adds map heatmap/congestion layer for dense or overlapping spectrum activity.
+# - Adds conflict severity scoring, recommended actions, and CSV export.
+# - Adds mission templates so users can save/reuse standard workbook setups.
+# - Adds GeoJSON export for GIS/web map workflows.
+# - Adds terrain/range planning: distance, RF horizon estimate, and site-to-site LOS screening.
+# - Adds full project backup/restore JSON export for admins.
+# - Adds smart frequency planning with alternate frequency/time-shift recommendations.
+# - Adds Apply Smart Plan workflow to update workbook rows from selected recommendations.
+# - Adds row-level edit history, project dashboard, MGRS/USNG support, and smart import cleanup.
+# - Fixes mission template project_id NameError in sidebar.
+# - Fixes missing json import for project backup export.
+# - Adds local json import fallback and recursive backup JSON sanitizer.
+# - Restores missing conflict_summary function for Conflict Tables tab.
+# - Restores missing conflict recommendation helper functions.
+# - Restores missing Smart Planner helper functions.
+# - V40: frequency-only box labels, Unit/Sponsor deconfliction tabs, .95 transparency default, high-power default off, dashboard visuals.
+# - V41: dark PCC6 command-dashboard UI styling.
+# - V42: Active/Inactive frequency toggle so unused allocations can be turned off without deleting rows.
+# - V43: Fixes undefined guard variable in Unit/Sponsor deconfliction and improves blank Unit/Sponsor handling.
+# - V44: Adds real PCC6 command-dashboard layout to match the requested mockup style.
+# - V45: Rebuilds command dashboard with real Streamlit columns/panels so it visually matches the mockup better.
+# - V46: Full web-app polish: app shell, fixed top nav style, web cards, status badges, modern dashboard layout, and cleaner controls.
+# - V47: Adds allocation engine: upload Request Tracker + Approved Frequencies, build allocation plan, preserve workbook schema, export workbook.
+
 import io
 import json
 import math
@@ -29,6 +84,64 @@ from matplotlib.backends.backend_pdf import PdfPages
 from supabase import create_client
 
 st.set_page_config(page_title="Spectrum Planner", page_icon="📡", layout="wide", initial_sidebar_state="expanded")
+
+
+
+# ---------------- V48 Active / Locked column order helpers ----------------
+
+def to_bool_flag(value, default=False):
+    try:
+        if pd.isna(value):
+            return default
+    except Exception:
+        pass
+    s = str(value).strip().lower()
+    if s in ["true", "yes", "y", "1", "on", "active", "locked"]:
+        return True
+    if s in ["false", "no", "n", "0", "off", "inactive", "unlocked"]:
+        return False
+    return default
+
+
+def ensure_active_locked_first(df, default_active=True, default_locked=False):
+    """
+    Keep the spreadsheet's original column order, except:
+      Column A = Active
+      Column B = Locked
+    """
+    if df is None:
+        return df
+
+    out = df.copy()
+
+    rename_map = {}
+    for c in list(out.columns):
+        low = str(c).strip().lower()
+        if low == "active" and c != "Active":
+            rename_map[c] = "Active"
+        elif low in ["locked", "lock", "frequency locked", "frequencylocked"] and c != "Locked":
+            rename_map[c] = "Locked"
+    if rename_map:
+        out = out.rename(columns=rename_map)
+
+    if "Active" not in out.columns:
+        out.insert(0, "Active", default_active)
+    else:
+        out["Active"] = out["Active"].apply(lambda v: to_bool_flag(v, default_active))
+
+    if "Locked" not in out.columns:
+        insert_at = 1 if "Active" in out.columns else 0
+        out.insert(insert_at, "Locked", default_locked)
+    else:
+        out["Locked"] = out["Locked"].apply(lambda v: to_bool_flag(v, default_locked))
+
+    cols = ["Active", "Locked"] + [c for c in out.columns if c not in ["Active", "Locked"]]
+    return out[cols]
+
+
+def normalize_active_locked_for_save(df):
+    return ensure_active_locked_first(df)
+
 
 
 def apply_pcc6_dark_ui():
@@ -754,12 +867,14 @@ sb = get_supabase()
 sb_admin = get_supabase_admin()
 
 APP_COLUMNS = [
+    "Active",
+    "Locked",
     "Start Time", "End Time", "Equipment", "Center Frequency (MHz)",
     "Start Frequency (MHz)", "End Frequency (MHz)", "Bandwidth (MHz)",
     "Power (W)", "Power (dBm)", "Tech", "Unit", "Notes",
     "Latitude", "Longitude", "Location",
     "Antenna Height", "Coverage Radius", "Site Name",
-    "MGRS", "USNG", "Active",
+    "MGRS", "USNG",
 ]
 
 STANDARD_RENAME = {
@@ -1414,8 +1529,13 @@ def normalize_uploaded_df(df):
     if "Active" in out.columns:
         out["Active"] = out["Active"].apply(lambda v: True if pd.isna(v) else to_active_bool(v))
 
-    return out[APP_COLUMNS].reset_index(drop=True)
-
+    out = ensure_active_locked_first(out)
+    preferred = ["Active", "Locked"] + [
+        c for c in uploaded_column_order
+        if c in out.columns and c not in ["Active", "Locked"]
+    ]
+    preferred += [c for c in out.columns if c not in preferred]
+    return out[preferred].reset_index(drop=True)
 def app_to_internal(df):
     out = df.copy()
     out.columns = [INTERNAL_RENAME.get(str(c), str(c)) for c in out.columns]
@@ -3641,6 +3761,8 @@ def section_header_html(title, caption="", right=""):
 # ---------------- Allocation Engine V47 ----------------
 
 ALLOCATION_ENGINE_COLUMNS = [
+    "Active",
+    "Locked",
     "Start Time", "End Time", "Equipment", "Center Frequency (MHz)",
     "Start Frequency (MHz)", "End Frequency (MHz)", "Bandwidth (MHz)",
     "Power (W)", "Tech", "Unit", "Sponsor", "Latitude", "Longitude",
@@ -4042,6 +4164,8 @@ def build_allocation_workbook_from_request_and_pool(request_file, approved_file)
                 notes.append("High channel count - review actual nets")
             ism_notes = "; ".join(notes) if notes else "Auto-assigned using approved pool and NTC area reuse"
             row = {
+                "Active": True,
+                "Locked": False,
                 "Start Time": "0600",
                 "End Time": "2000",
                 "Equipment": equipment,
@@ -4099,7 +4223,7 @@ def ae_export_allocation_workbook(rows, needs_review, conflicts):
     default = wb.active
     wb.remove(default)
 
-    base_cols = ALLOCATION_ENGINE_COLUMNS + ALLOCATION_ENGINE_APPEND_COLUMNS
+    base_cols = ["Active", "Locked"] + [c for c in ALLOCATION_ENGINE_COLUMNS if c not in ["Active", "Locked"]] + ALLOCATION_ENGINE_APPEND_COLUMNS
     # Keep existing format first. App/helper-only fields stay far right.
     extra_cols = ["Allocation ID", "Request Band", "Channels Requested", "Request Status", "POC"]
 
@@ -4766,7 +4890,7 @@ if auto_refresh:
 
 current_df = get_project_rows(project_id)
 current_df_all = current_df.copy()
-current_df = apply_active_filter(current_df, show_inactive_rows)
+current_df = ensure_active_locked_first(apply_active_filter(current_df, show_inactive_rows))
 
 # Restore saved workbook sheets. If there are no saved sheets yet, use the shared allocation table as a single Working sheet.
 saved_sheets = load_project_sheets(project_id)
