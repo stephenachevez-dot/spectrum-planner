@@ -929,12 +929,6 @@ APP_COLUMNS = [
 ]
 
 STANDARD_RENAME = {
-    "Active": "Active",
-    "Enabled": "Active",
-    "In Use": "Active",
-    "Use": "Active",
-    "Include": "Active",
-    
     "StartTime": "Start Time",
     "EndTime": "End Time",
     "Start Time": "Start Time",
@@ -1006,10 +1000,14 @@ STANDARD_RENAME = {
     "USNG": "USNG",
     "Grid": "MGRS",
     "Military Grid": "MGRS",
+    "Active": "Active",
+    "Enabled": "Active",
+    "In Use": "Active",
+    "Use": "Active",
+    "Include": "Active",
 }
 
 INTERNAL_RENAME = {
-    "Active": "Active",
     "Start Time": "StartTime",
     "End Time": "EndTime",
     "Equipment": "Equipment",
@@ -1030,6 +1028,7 @@ INTERNAL_RENAME = {
     "Site Name": "SiteName",
     "MGRS": "MGRS",
     "USNG": "USNG",
+    "Active": "Active",
 }
 
 def now_iso():
@@ -4606,158 +4605,295 @@ def v491_export_plan(master, needs):
 
 
 
-# ---------------- V49.3 Auto Deconflict by Frequency ----------------
+# ---------------- V49.4 Smart Frequency Deconflict - existing app ----------------
 
-def v493_norm(x):
-    try:
-        if x is None or pd.isna(x): return ""
-    except Exception:
-        if x is None: return ""
-    return str(x).strip()
+def sfd_key(x):
+    return re.sub(r"[^a-z0-9]+", "", str(x or "").strip().lower())
 
-def v493_bool(x, default=False):
-    s=v493_norm(x).lower()
-    if s in ["true","yes","y","1","on","locked","active"]: return True
-    if s in ["false","no","n","0","off","unlocked","inactive"]: return False
-    return default
 
-def v493_float(x, default=None):
-    try:
-        if x is None or pd.isna(x): return default
-    except Exception: pass
-    try:
-        m=re.search(r"-?\d+(?:\.\d+)?", str(x).replace(",",""))
-        return float(m.group(0)) if m else default
-    except Exception: return default
-
-def v493_find_col(df, names):
-    if df is None: return None
-    lookup={re.sub(r"[^a-z0-9]+","",str(c).lower()):c for c in df.columns}
+def sfd_find_col(df, names):
+    lookup = {sfd_key(c): c for c in df.columns}
     for n in names:
-        k=re.sub(r"[^a-z0-9]+","",str(n).lower())
-        if k in lookup: return lookup[k]
+        k = sfd_key(n)
+        if k in lookup:
+            return lookup[k]
     for n in names:
-        k=re.sub(r"[^a-z0-9]+","",str(n).lower())
-        for lk,c in lookup.items():
-            if k and (k in lk or lk in k): return c
+        k = sfd_key(n)
+        for lk, col in lookup.items():
+            if k and (k in lk or lk in k):
+                return col
     return None
 
-def v493_time_min(x):
-    s=v493_norm(x).lower()
-    if not s: return None
+
+def sfd_float(x, default=None):
     try:
-        if ':' in s:
-            h,m=s.split(':')[:2]; return int(float(h))*60+int(float(m))
-        m=re.match(r"(\d+(?:\.\d+)?)(am|pm)?",s)
-        if not m: return None
-        val=float(m.group(1)); suf=m.group(2)
-        if val>=100 and suf is None:
-            return int(val//100)*60+int(val%100)
-        if suf=='pm' and val<12: val+=12
-        if suf=='am' and val==12: val=0
-        return int(val*60)
-    except Exception: return None
+        if x is None or pd.isna(x):
+            return default
+    except Exception:
+        pass
+    try:
+        m = re.search(r"-?\d+(?:\.\d+)?", str(x).replace(",", ""))
+        return float(m.group(0)) if m else default
+    except Exception:
+        return default
 
-def v493_time_overlap(a1,a2,b1,b2):
-    a1,a2,b1,b2=map(v493_time_min,[a1,a2,b1,b2])
-    if None in [a1,a2,b1,b2]: return True
-    return max(a1,b1)<min(a2,b2)
 
-def v493_area(x):
-    s=v493_norm(x).lower()
-    if 'north' in s: return 'North'
-    if 'central' in s or 'center' in s: return 'Central'
-    if 'south' in s: return 'South'
-    return v493_norm(x) or 'NTC Ft Irwin'
+def sfd_bool(x, default=False):
+    try:
+        if pd.isna(x):
+            return default
+    except Exception:
+        pass
+    s = str(x).strip().lower()
+    if s in ["true", "yes", "y", "1", "on", "active", "locked", "checked", "x"]:
+        return True
+    if s in ["false", "no", "n", "0", "off", "inactive", "unlocked", "unchecked", "", "none"]:
+        return False
+    return default
 
-def v493_ranges_overlap(a1,a2,b1,b2,guard=0.0):
-    return max(a1-guard,b1)<min(a2+guard,b2)
 
-def v493_locked(row):
-    for k in ['Locked','Lock Frequency','Lock Both']:
-        if k in row.index and v493_bool(row.get(k),False): return True
+def sfd_area(x):
+    s = str(x or "").strip().lower()
+    if "north" in s:
+        return "North"
+    if "central" in s or "center" in s:
+        return "Central"
+    if "south" in s:
+        return "South"
+    return str(x or "NTC Ft Irwin").strip() or "NTC Ft Irwin"
+
+
+def sfd_geo_reuse(a, b):
+    geo = ["North", "Central", "South"]
+    aa, bb = sfd_area(a), sfd_area(b)
+    return aa in geo and bb in geo and aa != bb
+
+
+def sfd_time_min(x):
+    s = str(x or "").strip().lower()
+    if not s:
+        return None
+    try:
+        if ":" in s:
+            hh, mm = s.split(":")[:2]
+            return int(float(hh)) * 60 + int(float(mm))
+        m = re.match(r"^(\d+(?:\.\d+)?)(am|pm)?$", s)
+        if not m:
+            return None
+        val = float(m.group(1))
+        suffix = m.group(2)
+        if suffix is None and val >= 100:
+            return int(val // 100) * 60 + int(val % 100)
+        if suffix == "pm" and val < 12:
+            val += 12
+        if suffix == "am" and val == 12:
+            val = 0
+        return int(val * 60)
+    except Exception:
+        return None
+
+
+def sfd_time_overlap(a1, a2, b1, b2):
+    vals = [sfd_time_min(a1), sfd_time_min(a2), sfd_time_min(b1), sfd_time_min(b2)]
+    if any(v is None for v in vals):
+        return True
+    return max(vals[0], vals[2]) < min(vals[1], vals[3])
+
+
+def sfd_get_cols(df):
+    return {
+        "active": sfd_find_col(df, ["Active"]),
+        "locked": sfd_find_col(df, ["Locked", "Lock Frequency", "Lock Both"]),
+        "center": sfd_find_col(df, ["Center Frequency (MHz)", "Center Frequency", "Frequency"]),
+        "startf": sfd_find_col(df, ["Start Frequency (MHz)", "Start Frequency", "StartF"]),
+        "endf": sfd_find_col(df, ["End Frequency (MHz)", "End Frequency", "EndF"]),
+        "bw": sfd_find_col(df, ["Bandwidth (MHz)", "Bandwidth", "BW"]),
+        "st": sfd_find_col(df, ["Start Time", "Start"]),
+        "et": sfd_find_col(df, ["End Time", "End"]),
+        "area": sfd_find_col(df, ["NTC Area", "Area"]),
+        "equipment": sfd_find_col(df, ["Equipment", "System"]),
+        "unit": sfd_find_col(df, ["Unit"]),
+        "notes": sfd_find_col(df, ["Notes"]),
+    }
+
+
+def sfd_is_locked(row):
+    for c in ["Locked", "Lock Frequency", "Lock Both"]:
+        if c in row.index and sfd_bool(row.get(c), False):
+            return True
     return False
 
-def v493_pool(df):
-    cc=v493_find_col(df,['Center Frequency (MHz)','Center Frequency','Frequency'])
-    bwc=v493_find_col(df,['Bandwidth (MHz)','Bandwidth','BW'])
-    ec=v493_find_col(df,['Equipment','System'])
-    tc=v493_find_col(df,['Tech','Technology'])
-    if cc is None: return []
-    seen=set(); out=[]
-    for _,r in df.iterrows():
-        c=v493_float(r.get(cc),None)
-        if c is None: continue
-        bw=v493_float(r.get(bwc),0.0) if bwc else 0.0
-        key=(round(c,6),round(bw,6))
-        if key in seen: continue
-        seen.add(key)
-        out.append({'center':c,'bw':bw,'equipment':v493_norm(r.get(ec)) if ec else '', 'tech':v493_norm(r.get(tc)) if tc else ''})
-    return sorted(out,key=lambda p:p['center'])
 
-def v493_clear(df,idx,center,bw,cols,guard):
-    s=center-bw/2; e=center+bw/2; row=df.loc[idx]
-    for j,o in df.iterrows():
-        if j==idx: continue
-        if cols['active'] and not v493_bool(o.get(cols['active']),True): continue
-        if cols['area']:
-            a=v493_area(row.get(cols['area'])); b=v493_area(o.get(cols['area']))
-            if a!=b and a in ['North','Central','South'] and b in ['North','Central','South']:
-                continue
-        if cols['st'] and cols['et'] and not v493_time_overlap(row.get(cols['st']),row.get(cols['et']),o.get(cols['st']),o.get(cols['et'])):
+def sfd_conflict(row_a, row_b, cols, guard=0.0):
+    if cols["active"]:
+        if not sfd_bool(row_a.get(cols["active"]), True) or not sfd_bool(row_b.get(cols["active"]), True):
+            return False
+
+    if cols["area"] and sfd_geo_reuse(row_a.get(cols["area"]), row_b.get(cols["area"])):
+        return False
+
+    if cols["st"] and cols["et"]:
+        if not sfd_time_overlap(row_a.get(cols["st"]), row_a.get(cols["et"]), row_b.get(cols["st"]), row_b.get(cols["et"])):
+            return False
+
+    ca = sfd_float(row_a.get(cols["center"]), None)
+    ba = sfd_float(row_a.get(cols["bw"]), None)
+    cb = sfd_float(row_b.get(cols["center"]), None)
+    bb = sfd_float(row_b.get(cols["bw"]), None)
+    if None in [ca, ba, cb, bb] or ba <= 0 or bb <= 0:
+        return False
+
+    a1, a2 = ca - ba / 2.0, ca + ba / 2.0
+    b1, b2 = cb - bb / 2.0, cb + bb / 2.0
+    return max(a1 - guard, b1) < min(a2 + guard, b2)
+
+
+def sfd_detect_conflicts(df, guard=0.0):
+    cols = sfd_get_cols(df)
+    conflicts = []
+    for i in range(len(df)):
+        for j in range(i + 1, len(df)):
+            if sfd_conflict(df.iloc[i], df.iloc[j], cols, guard):
+                conflicts.append({
+                    "Row A": int(df.index[i]) + 1,
+                    "Row B": int(df.index[j]) + 1,
+                    "Equipment A": df.iloc[i].get(cols["equipment"]) if cols["equipment"] else "",
+                    "Equipment B": df.iloc[j].get(cols["equipment"]) if cols["equipment"] else "",
+                    "Center A": df.iloc[i].get(cols["center"]),
+                    "Center B": df.iloc[j].get(cols["center"]),
+                    "Reason": "Frequency overlap during same time/non-reusable area",
+                })
+    return pd.DataFrame(conflicts)
+
+
+def sfd_candidate_clear(df, idx, new_center, bw, cols, guard=0.0):
+    test = df.loc[idx].copy()
+    test[cols["center"]] = new_center
+    for other_idx, other in df.iterrows():
+        if other_idx == idx:
             continue
-        os=v493_float(o.get(cols['sf']),None) if cols['sf'] else None
-        oe=v493_float(o.get(cols['ef']),None) if cols['ef'] else None
-        oc=v493_float(o.get(cols['cf']),None) if cols['cf'] else None
-        obw=v493_float(o.get(cols['bw']),None) if cols['bw'] else None
-        if os is None or oe is None:
-            if oc is not None and obw is not None: os=oc-obw/2; oe=oc+obw/2
-            else: continue
-        if v493_ranges_overlap(s,e,os,oe,guard): return False
+        if sfd_conflict(test, other, cols, guard):
+            return False
     return True
 
-def auto_deconflict_by_frequency_v493(df, guard_mhz=0.0):
-    if df is None or df.empty: return df, pd.DataFrame()
-    out=df.copy()
-    cols={
-        'active':v493_find_col(out,['Active']),
-        'cf':v493_find_col(out,['Center Frequency (MHz)','Center Frequency','Frequency']),
-        'sf':v493_find_col(out,['Start Frequency (MHz)','Start Frequency','StartF']),
-        'ef':v493_find_col(out,['End Frequency (MHz)','End Frequency','EndF']),
-        'bw':v493_find_col(out,['Bandwidth (MHz)','Bandwidth','BW']),
-        'st':v493_find_col(out,['Start Time','Start']),
-        'et':v493_find_col(out,['End Time','End']),
-        'area':v493_find_col(out,['NTC Area','Area','Location']),
-        'eq':v493_find_col(out,['Equipment','System']),
-        'tech':v493_find_col(out,['Tech','Technology']),
-        'notes':v493_find_col(out,['Notes'])}
-    if cols['cf'] is None or cols['bw'] is None: raise ValueError('Requires Center Frequency and Bandwidth columns.')
-    if cols['sf'] is None: out['Start Frequency (MHz)']=None; cols['sf']='Start Frequency (MHz)'
-    if cols['ef'] is None: out['End Frequency (MHz)']=None; cols['ef']='End Frequency (MHz)'
-    if cols['notes'] is None: out['Notes']=''; cols['notes']='Notes'
-    pool=v493_pool(out); changes=[]
-    for idx,row in out.iterrows():
-        if cols['active'] and not v493_bool(row.get(cols['active']),True): continue
-        if v493_locked(row): continue
-        bw=v493_float(row.get(cols['bw']),None); old=v493_float(row.get(cols['cf']),None)
-        if bw is None or bw<=0 or old is None: continue
-        if v493_clear(out,idx,old,bw,cols,guard_mhz): continue
-        eqkey=re.sub(r'[^a-z0-9]+','',v493_norm(row.get(cols['eq'])).lower()) if cols['eq'] else ''
-        def score(p):
-            pkey=re.sub(r'[^a-z0-9]+','',(p.get('equipment','')+' '+p.get('tech','')).lower())
-            return (-100000 if eqkey and (eqkey in pkey or pkey in eqkey) else 0)+abs((p.get('bw') or bw)-bw)*100+abs(p['center']-old)
-        for cand in sorted(pool,key=score):
-            new=float(cand['center'])
-            if abs(new-old)<1e-9: continue
-            if v493_clear(out,idx,new,bw,cols,guard_mhz):
-                out.at[idx,cols['cf']]=round(new,6)
-                out.at[idx,cols['sf']]=round(new-bw/2,6)
-                out.at[idx,cols['ef']]=round(new+bw/2,6)
-                note=v493_norm(out.at[idx,cols['notes']])
-                out.at[idx,cols['notes']]=(note+' | '+f'Auto frequency deconflict: moved center {old} -> {round(new,6)} MHz').strip(' |')
-                changes.append({'Row':int(idx)+1,'Equipment':row.get(cols['eq']) if cols['eq'] else '', 'Old Center Frequency (MHz)':old,'New Center Frequency (MHz)':round(new,6),'Bandwidth (MHz)':bw,'Action':'Moved frequency; time unchanged'})
-                break
-    return out,pd.DataFrame(changes)
+
+def sfd_build_candidates(df, search_low, search_high, bw, step_mhz):
+    centers = []
+    cols = sfd_get_cols(df)
+
+    # Use existing/approved centers first.
+    if cols["center"]:
+        for v in df[cols["center"]].tolist():
+            c = sfd_float(v, None)
+            if c is not None and search_low <= c <= search_high and c not in centers:
+                centers.append(round(c, 6))
+
+    # Scan open band grid.
+    start = search_low + bw / 2.0
+    end = search_high - bw / 2.0
+    x = start
+    steps = 0
+    while x <= end + 1e-9 and steps < 50000:
+        c = round(x, 6)
+        if c not in centers:
+            centers.append(c)
+        x += step_mhz
+        steps += 1
+    return centers
+
+
+def smart_frequency_deconflict_existing_app(df, search_low=4400.0, search_high=4940.0, step_mhz=0.1, guard_mhz=0.0, max_passes=5):
+    out = df.copy()
+    cols = sfd_get_cols(out)
+
+    if cols["center"] is None or cols["bw"] is None:
+        raise ValueError("Center Frequency (MHz) and Bandwidth (MHz) are required.")
+
+    if cols["startf"] is None:
+        out["Start Frequency (MHz)"] = None
+        cols["startf"] = "Start Frequency (MHz)"
+    if cols["endf"] is None:
+        out["End Frequency (MHz)"] = None
+        cols["endf"] = "End Frequency (MHz)"
+    if cols["notes"] is None:
+        out["Notes"] = ""
+        cols["notes"] = "Notes"
+
+    # Recalculate existing start/end.
+    for idx, row in out.iterrows():
+        c = sfd_float(row.get(cols["center"]), None)
+        bw = sfd_float(row.get(cols["bw"]), None)
+        if c is not None and bw is not None and bw > 0:
+            out.at[idx, cols["startf"]] = round(c - bw / 2.0, 6)
+            out.at[idx, cols["endf"]] = round(c + bw / 2.0, 6)
+
+    moves = []
+
+    for p in range(1, max_passes + 1):
+        conflicts = sfd_detect_conflicts(out, guard_mhz)
+        if conflicts.empty:
+            break
+
+        conflict_rows = []
+        for _, r in conflicts.iterrows():
+            conflict_rows.extend([int(r["Row A"]) - 1, int(r["Row B"]) - 1])
+
+        ordered = list(pd.Series(conflict_rows).value_counts().index)
+        moved = False
+
+        for idx in ordered:
+            if idx not in out.index:
+                continue
+            row = out.loc[idx]
+
+            if cols["active"] and not sfd_bool(row.get(cols["active"]), True):
+                continue
+            if sfd_is_locked(row):
+                continue
+
+            old_center = sfd_float(row.get(cols["center"]), None)
+            bw = sfd_float(row.get(cols["bw"]), None)
+            if old_center is None or bw is None or bw <= 0:
+                continue
+
+            candidates = sfd_build_candidates(out, search_low, search_high, bw, step_mhz)
+
+            def score(center):
+                nearby = 0
+                for _, other in out.iterrows():
+                    oc = sfd_float(other.get(cols["center"]), None)
+                    if oc is not None and abs(oc - center) <= 25:
+                        nearby += 1
+                return (nearby, abs(center - old_center))
+
+            for new_center in sorted(candidates, key=score):
+                if abs(new_center - old_center) < 1e-9:
+                    continue
+                if sfd_candidate_clear(out, idx, new_center, bw, cols, guard_mhz):
+                    out.at[idx, cols["center"]] = round(new_center, 6)
+                    out.at[idx, cols["startf"]] = round(new_center - bw / 2.0, 6)
+                    out.at[idx, cols["endf"]] = round(new_center + bw / 2.0, 6)
+                    note = str(out.at[idx, cols["notes"]] or "")
+                    add = f"Smart frequency deconflict: {old_center} -> {round(new_center, 6)} MHz; time unchanged"
+                    out.at[idx, cols["notes"]] = (note + " | " + add).strip(" |")
+                    moves.append({
+                        "Pass": p,
+                        "Row": int(idx) + 1,
+                        "Equipment": row.get(cols["equipment"]) if cols["equipment"] else "",
+                        "Unit": row.get(cols["unit"]) if cols["unit"] else "",
+                        "Old Center Frequency (MHz)": old_center,
+                        "New Center Frequency (MHz)": round(new_center, 6),
+                        "Bandwidth (MHz)": bw,
+                        "Action": "Moved frequency; time unchanged",
+                    })
+                    moved = True
+                    break
+
+        if not moved:
+            break
+
+    return out, pd.DataFrame(moves), sfd_detect_conflicts(out, guard_mhz)
+
 
 # ---------------- Allocation Engine V47 ----------------
 
@@ -6301,47 +6437,80 @@ with st.expander("Row-level edit history", expanded=False):
 
 
 
-# ---------------- V49.3 Frequency Auto-Deconfliction UI ----------------
-with st.expander("Auto Deconflict by Frequency", expanded=False):
-    st.caption("Moves only unlocked active rows to a clear frequency. Start Time and End Time stay unchanged.")
-    guard_mhz_v493 = st.number_input("Guard band / separation to protect (MHz)", min_value=0.0, max_value=100.0, value=0.0, step=0.1, key="v493_guard_mhz")
-    if st.button("Auto deconflict by frequency", use_container_width=True, key="v493_auto_freq_deconflict"):
+# ---------------- V49.4 Smart Frequency Deconflict Button ----------------
+with st.expander("Smart Frequency Deconflict", expanded=False):
+    st.caption("Moves unlocked active rows to open frequency spots. Keeps Start Time / End Time unchanged.")
+
+    c1_sfd, c2_sfd, c3_sfd, c4_sfd = st.columns(4)
+    with c1_sfd:
+        sfd_low = st.number_input("Search low MHz", value=4400.0, step=1.0, key="sfd_low")
+    with c2_sfd:
+        sfd_high = st.number_input("Search high MHz", value=4940.0, step=1.0, key="sfd_high")
+    with c3_sfd:
+        sfd_step = st.number_input("Step MHz", value=0.1, min_value=0.001, step=0.1, key="sfd_step")
+    with c4_sfd:
+        sfd_guard = st.number_input("Guard MHz", value=0.0, min_value=0.0, step=0.1, key="sfd_guard")
+
+    if st.button("Smart deconflict by frequency", type="primary", use_container_width=True, key="sfd_button"):
         try:
-            target_df_v493 = active_sheet_df.copy() if "active_sheet_df" in locals() else current_df.copy()
-            new_df_v493, changes_v493 = auto_deconflict_by_frequency_v493(target_df_v493, guard_mhz=guard_mhz_v493)
-            if changes_v493.empty:
-                st.info("No frequency moves were needed or no clear alternate frequency was found.")
+            source_sfd = active_sheet_df.copy() if "active_sheet_df" in locals() else current_df.copy()
+            corrected_sfd, moves_sfd, remaining_sfd = smart_frequency_deconflict_existing_app(
+                source_sfd,
+                search_low=sfd_low,
+                search_high=sfd_high,
+                step_mhz=sfd_step,
+                guard_mhz=sfd_guard,
+                max_passes=5,
+            )
+
+            st.session_state["sfd_pending_df"] = corrected_sfd
+            st.session_state["sfd_moves_df"] = moves_sfd
+            st.session_state["sfd_remaining_df"] = remaining_sfd
+
+            if moves_sfd.empty:
+                st.info("No rows were moved. Rows may be locked, conflict-free, or no clear open frequency was found.")
             else:
-                st.success(f"Proposed {len(changes_v493)} frequency move(s).")
-                st.dataframe(changes_v493, use_container_width=True, hide_index=True)
-                st.session_state["v493_pending_frequency_deconflict_df"] = new_df_v493
-                st.session_state["v493_pending_frequency_deconflict_changes"] = changes_v493
+                st.success(f"Proposed {len(moves_sfd)} frequency move(s).")
+                st.dataframe(moves_sfd, use_container_width=True, hide_index=True)
+
+            if not remaining_sfd.empty:
+                st.warning(f"{len(remaining_sfd)} conflict(s) remain.")
+                st.dataframe(remaining_sfd, use_container_width=True, hide_index=True)
+
         except Exception as e:
-            st.error(f"Auto frequency deconflict failed: {type(e).__name__}: {str(e)}")
-            try: st.code(traceback.format_exc())
-            except Exception: pass
-    if "v493_pending_frequency_deconflict_df" in st.session_state:
-        confirm_apply_v493 = st.checkbox("I reviewed the frequency deconfliction changes and want to apply them", key="v493_confirm_apply")
-        if st.button("Apply frequency deconfliction to active sheet", use_container_width=True, key="v493_apply_frequency_deconflict"):
-            if not confirm_apply_v493:
-                st.warning("Check the review box before applying changes.")
+            st.error(f"Smart frequency deconflict failed: {type(e).__name__}: {str(e)}")
+            try:
+                st.code(traceback.format_exc())
+            except Exception:
+                pass
+
+    if "sfd_pending_df" in st.session_state:
+        ok_sfd = st.checkbox("I reviewed the frequency moves and want to apply them", key="sfd_ok")
+        if st.button("Apply smart frequency moves", use_container_width=True, key="sfd_apply"):
+            if not ok_sfd:
+                st.warning("Check the review box first.")
             else:
                 try:
-                    applied_df_v493 = st.session_state["v493_pending_frequency_deconflict_df"]
+                    final_sfd = st.session_state["sfd_pending_df"]
                     if "project_id" in locals() and "logged_in_user" in locals():
-                        replace_project_rows(project_id, applied_df_v493, logged_in_user)
-                        save_version(project_id, applied_df_v493, logged_in_user, "Auto deconflict by frequency")
-                        log_audit_event(project_id, "auto_deconflict_by_frequency", logged_in_user, {"rows_moved": len(st.session_state.get("v493_pending_frequency_deconflict_changes", []))})
-                        st.success("Frequency deconfliction applied and saved.")
-                        del st.session_state["v493_pending_frequency_deconflict_df"]
-                        if "v493_pending_frequency_deconflict_changes" in st.session_state: del st.session_state["v493_pending_frequency_deconflict_changes"]
+                        replace_project_rows(project_id, final_sfd, logged_in_user)
+                        save_version(project_id, final_sfd, logged_in_user, "Smart frequency deconflict")
+                        st.success("Smart frequency moves applied and saved.")
+                        del st.session_state["sfd_pending_df"]
+                        if "sfd_moves_df" in st.session_state:
+                            del st.session_state["sfd_moves_df"]
+                        if "sfd_remaining_df" in st.session_state:
+                            del st.session_state["sfd_remaining_df"]
                         st.rerun()
                     else:
-                        st.error("Project save context was not found. Changes were not applied.")
+                        st.error("Save context not found. Changes were not applied.")
                 except Exception as e:
-                    st.error(f"Could not apply frequency deconfliction: {type(e).__name__}: {str(e)}")
-                    try: st.code(traceback.format_exc())
-                    except Exception: pass
+                    st.error(f"Could not apply smart frequency moves: {type(e).__name__}: {str(e)}")
+                    try:
+                        st.code(traceback.format_exc())
+                    except Exception:
+                        pass
+
 
 with st.expander("Active / inactive frequency control", expanded=False):
     st.caption("Turn off frequencies you are not using. Inactive rows remain saved but are excluded from plots, conflicts, smart planner, maps, and dashboards unless 'Show inactive frequencies' is enabled.")
@@ -6457,7 +6626,8 @@ with st.expander("Import / replace table from file or pasted CSV", expanded=(len
                 })
                 st.dataframe(mapping_preview, use_container_width=True)
                 if mgrs is None:
-                    st.info("MGRS/USNG conversion requires adding `mgrs` to requirements. Without it, Latitude/Longitude must be provided directly.")
+                    st.info("MGRS/USNG conversion requires 
+adding `mgrs` to requirements. Without it, Latitude/Longitude must be provided directly.")
 
             b1, b2 = st.columns(2)
             with b1:
