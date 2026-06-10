@@ -6523,8 +6523,7 @@ with left_col:
     st.markdown('<div class="v45-filter-box"><div class="v45-filter-title">Filters</div>', unsafe_allow_html=True)
     st.caption("Main filters are controlled in the sidebar. This panel mirrors the mockup layout.")
     st.markdown("**Band**")
- 
-   st.code(st.session_state.get("active_sheet_name", "Active band"), language=None)
+    st.code(st.session_state.get("active_sheet_name", "Active band"), language=None)
     st.markdown("**Date**")
     st.code("Current project", language=None)
     st.markdown("**Legend**")
