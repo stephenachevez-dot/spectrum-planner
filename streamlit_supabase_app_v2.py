@@ -6353,4 +6353,4 @@ with tab13:
     if "Message" in val_df.columns:
         st.success(val_df["Message"].iloc[0])
     else:
-        st.warning(f"{len(val_df)} allocation issues found"
+        st.warning(f"{len(val_df)} allocation issues found")
