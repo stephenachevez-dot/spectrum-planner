@@ -6328,8 +6328,7 @@ st.markdown(
 )
 
 main_tab_dashboard, main_tab_allocation, main_tab_deconflict, main_tab_map, main_tab_import = st.tabs(
-    ["Dashboard", "Allocation Manager", "Deconfl
-iction", "Map", "Import / Export"]
+    ["Dashboard", "Allocation Manager", "Deconfliction", "Map", "Import / Export"]
 )
 
 with main_tab_dashboard:
