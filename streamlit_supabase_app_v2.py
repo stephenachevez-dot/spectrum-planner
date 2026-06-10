@@ -6353,8 +6353,7 @@ with tab13:
     if "Message" in val_df.columns:
         st.success(val_df["Message"].iloc[0])
     else:
-        st.warning(f"{len(val_df)} allocatio
-n row(s) need review.")
+        st.warning(f"{len(val_df)} allocation row(s) need review.")
         st.dataframe(val_df, use_container_width=True)
         st.download_button("Download validation issues CSV", val_df.to_csv(index=False).encode("utf-8"), "allocation_validation_issues.csv", "text/csv", use_container_width=True)
 
