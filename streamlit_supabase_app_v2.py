@@ -4605,6 +4605,159 @@ def v491_export_plan(master, needs):
 
 
 
+
+
+# ---------------- V49.6 Shared Visual Color Map ----------------
+
+VISUAL_COLOR_PALETTE_V496 = [
+    "#2563EB", "#16A34A", "#F97316", "#EAB308", "#9333EA",
+    "#DC2626", "#0891B2", "#65A30D", "#DB2777", "#7C3AED",
+    "#0D9488", "#CA8A04", "#0284C7", "#BE123C", "#475569",
+    "#4F46E5", "#15803D", "#C2410C", "#A16207", "#6D28D9",
+]
+
+
+def visual_color_key_v496(value):
+    s = str(value or "").strip()
+    if not s or s.lower() in ["nan", "none", "blank", "(blank)"]:
+        return "(blank)"
+    return s
+
+
+def get_visual_color_field_v496(df, preferred="Tech"):
+    """
+    Pick the field used for both chart colors and legend colors.
+    """
+    if df is None or not hasattr(df, "columns"):
+        return None
+    for col in [preferred, "Tech", "Unit", "Sponsor", "Sponser", "Equipment", "NTC Area", "Conflict Status"]:
+        if col in df.columns:
+            return col
+    return df.columns[0] if len(df.columns) else None
+
+
+def build_visual_color_map_v496(df, color_by="Tech"):
+    """
+    One source of truth for color assignment.
+    Every rectangle/bar and every legend item must use this same mapping.
+    """
+    if df is None or color_by is None or color_by not in df.columns:
+        return {}
+
+    keys = []
+    for value in df[color_by].fillna("(blank)").astype(str).tolist():
+        k = visual_color_key_v496(value)
+        if k not in keys:
+            keys.append(k)
+
+    color_map = {}
+    for i, k in enumerate(keys):
+        color_map[k] = VISUAL_COLOR_PALETTE_V496[i % len(VISUAL_COLOR_PALETTE_V496)]
+    return color_map
+
+
+def row_visual_color_v496(row, color_by, color_map):
+    try:
+        k = visual_color_key_v496(row.get(color_by, "(blank)"))
+    except Exception:
+        k = "(blank)"
+    return color_map.get(k, "#64748B")
+
+
+# V49.6 safety defaults for color mapping in legacy plots.
+try:
+    color_by_v496
+except NameError:
+    color_by_v496 = "Tech"
+try:
+    color_map_v496
+except NameError:
+    color_map_v496 = {}
+
+def legend_handles_v496(color_map, marker="s"):
+    try:
+        import matplotlib.pyplot as plt
+        return [
+            plt.Line2D([0], [0], marker=marker, color="w", markerfacecolor=color, markersize=10, label=label)
+            for label, color in color_map.items()
+        ]
+    except Exception:
+        return []
+
+
+def apply_shared_visual_colors_v496(df, preferred="Tech"):
+    """
+    Returns color_by, color_map.
+    Use these for both boxes and legend.
+    """
+    color_by = get_visual_color_field_v496(df, preferred=preferred)
+    color_map = build_visual_color_map_v496(df, color_by)
+    return color_by, color_map
+
+
+def draw_shared_legend_v496(ax, color_by, color_map):
+    handles = legend_handles_v496(color_map)
+    if not handles:
+        return
+    leg = ax.legend(handles=handles, title=color_by, loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=True)
+    try:
+        leg.get_frame().set_facecolor("#111827")
+        leg.get_frame().set_edgecolor("#CBD5E1")
+        import matplotlib.pyplot as plt
+        plt.setp(leg.get_texts(), color="white", fontsize=8)
+        plt.setp(leg.get_title(), color="white", fontsize=9, fontweight="bold")
+    except Exception:
+        pass
+
+
+# ---------------- V49.5 Strict Active Filter ----------------
+
+def active_filter_bool_v495(value, default=True):
+    try:
+        if pd.isna(value):
+            return default
+    except Exception:
+        pass
+    s = str(value).strip().lower()
+    if s in ["true", "yes", "y", "1", "on", "active", "checked", "x"]:
+        return True
+    if s in ["false", "no", "n", "0", "off", "inactive", "unchecked", "", "none"]:
+        return False
+    return default
+
+
+def active_col_name_v495(df):
+    if df is None or not hasattr(df, "columns"):
+        return None
+    for c in df.columns:
+        if str(c).strip().lower() == "active":
+            return c
+    return None
+
+
+def filter_active_rows_v495(df, show_inactive=False):
+    if df is None or not hasattr(df, "copy"):
+        return df
+    out = df.copy()
+    active_col = active_col_name_v495(out)
+    if active_col is None:
+        return out
+    out[active_col] = out[active_col].apply(lambda v: active_filter_bool_v495(v, True))
+    if not show_inactive:
+        out = out[out[active_col] == True].copy()
+    return out.reset_index(drop=True)
+
+
+def get_show_inactive_v495():
+    for k in ["show_inactive_rows", "show_inactive", "show_inactive_frequencies", "include_inactive", "include_inactive_rows"]:
+        try:
+            if k in st.session_state:
+                return bool(st.session_state[k])
+        except Exception:
+            pass
+    return False
+
+
 # ---------------- V49.4 Smart Frequency Deconflict - existing app ----------------
 
 def sfd_key(x):
@@ -6453,7 +6606,7 @@ with st.expander("Smart Frequency Deconflict", expanded=False):
 
     if st.button("Smart deconflict by frequency", type="primary", use_container_width=True, key="sfd_button"):
         try:
-            source_sfd = active_sheet_df.copy() if "active_sheet_df" in locals() else current_df.copy()
+            source_sfd = filter_active_rows_v495(active_sheet_df, get_show_inactive_v495()).copy() if "active_sheet_df" in locals() else current_df.copy()
             corrected_sfd, moves_sfd, remaining_sfd = smart_frequency_deconflict_existing_app(
                 source_sfd,
                 search_low=sfd_low,
@@ -6534,7 +6687,8 @@ with st.expander("Active / inactive frequency control", expanded=False):
             key=f"active_editor_{project_id}",
         )
 
-        c_on, c_off, c_save_active = st.columns(3)
+        c_on, c_off, 
+c_save_active = st.columns(3)
 
         with c_on:
             if st.button("Set all active", use_container_width=True):
