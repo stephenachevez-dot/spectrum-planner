@@ -1,3 +1,5 @@
+# - V48.6: Preserves exact workbook worksheet tab names, tab order, and sheet-specific column order.
+# - V48.5: Enforces exact sheet-specific column order from uploaded PCC6 workbook template.
 # - V48.4: Fixes upload KeyError: 0 by safely handling single/list uploads and Excel sheet dictionaries.
 # - V48.3: Fixes normalize_uploaded_df by removing out.columns dependency completely.
 # - V48.2: Adds full upload/import traceback diagnostics and safer workbook import handling.
@@ -1607,7 +1609,7 @@ def normalize_imported_workbook_sheets(sheets):
             if "is_allocation_like_sheet" in globals():
                 if not is_allocation_like_sheet(raw_df):
                     continue
-            normalized[str(sheet_name)] = normalize_uploaded_df(raw_df)
+            normalized[get_exact_sheet_name(sheet_name)] = normalize_uploaded_df(raw_df, sheet_name=get_exact_sheet_name(sheet_name))
         except Exception as exc:
             try:
                 st.error(f"Sheet '{sheet_name}' failed: {type(exc).__name__}: {str(exc)}")
@@ -1619,109 +1621,447 @@ def normalize_imported_workbook_sheets(sheets):
     return normalized
 
 
-def normalize_uploaded_df(df):
-    """
-    Normalize imported/edited tables safely.
 
-    V48.3 fix:
-    - No dependency on out.columns.
-    - Active is Column A.
-    - Locked is Column B.
-    - All other columns remain in their current dataframe order.
+
+# ---------------- V48.6 exact workbook tabs and columns ----------------
+
+EXACT_WORKBOOK_SHEET_ORDER = [
+    "HF-VHF-UHF Below 1350",
+    "1350-1390",
+    "1780-1850",
+    "2025-2110",
+    "2200-2300",
+    "2310-2360",
+    "2400-2490 part 15",
+    "4400-4940",
+    "5100-5900 part 15",
+    "9200-10000",
+    "15700-17700",
+    "SATCOM-CELL-EW"
+]
+
+EXACT_WORKBOOK_COLUMN_SCHEMA = {
+    "HF-VHF-UHF Below 1350": [
+        "Start Time",
+        "End Time",
+        "Unit",
+        "Sponsor",
+        "Equipment",
+        "Tech",
+        "Requested Frequency",
+        "Channels Requested",
+        "Request Band",
+        "Start Frequency (MHz)",
+        "Center Frequency (MHz)",
+        "End Frequency (MHz)",
+        "Bandwidth (MHz)",
+        "Power (W)",
+        "Tech Category",
+        "System / Platform",
+        "Location",
+        "NTC Area",
+        "Grid / MGRS",
+        "Altitude",
+        "Notes"
+    ],
+    "1350-1390": [
+        "Start Time",
+        "End Time",
+        "Unit",
+        "Sponsor",
+        "Equipment",
+        "Tech",
+        "Requested Frequency",
+        "Request Band",
+        "Channels Requested",
+        "Start Frequency (MHz)",
+        "Center Frequency (MHz)",
+        "End Frequency (MHz)",
+        "Bandwidth (MHz)",
+        "Power (W)",
+        "Tech Category",
+        "System / Platform",
+        "Location",
+        "NTC Area",
+        "Grid / MGRS",
+        "Altitude",
+        "Notes"
+    ],
+    "1780-1850": [
+        "Start Time",
+        "End Time",
+        "Unit",
+        "Sponsor",
+        "Equipment",
+        "Tech",
+        "Requested Frequency",
+        "Channels Requested",
+        "Request Band",
+        "Center Frequency (MHz)",
+        "Start Frequency (MHz)",
+        "End Frequency (MHz)",
+        "Bandwidth (MHz)",
+        "Power (W)",
+        "Tech Category",
+        "System / Platform",
+        "Location",
+        "NTC Area",
+        "Grid / MGRS",
+        "Altitude",
+        "Notes"
+    ],
+    "2025-2110": [
+        "Start Time",
+        "End Time",
+        "Unit",
+        "Sponsor",
+        "Equipment",
+        "Tech",
+        "Requested Frequency",
+        "Channels Requested",
+        "Request Band",
+        "Start Frequency (MHz)",
+        "Center Frequency (MHz)",
+        "End Frequency (MHz)",
+        "Bandwidth (MHz)",
+        "Power (W)",
+        "Tech Category",
+        "System / Platform",
+        "Location",
+        "NTC Area",
+        "Grid / MGRS",
+        "Altitude",
+        "Notes"
+    ],
+    "2200-2300": [
+        "Start Time",
+        "End Time",
+        "Unit",
+        "Sponsor",
+        "Equipment",
+        "Tech",
+        "Requested Frequency",
+        "Channels Requested",
+        "Request Band",
+        "Start Frequency (MHz)",
+        "Center Frequency (MHz)",
+        "End Frequency (MHz)",
+        "Bandwidth (MHz)",
+        "Power (W)",
+        "Tech Category",
+        "System / Platform",
+        "Location",
+        "NTC Area",
+        "Grid / MGRS",
+        "Altitude",
+        "Notes"
+    ],
+    "2310-2360": [
+        "Start Time",
+        "End Time",
+        "Unit",
+        "Sponsor",
+        "Equipment",
+        "Tech",
+        "Requested Frequency",
+        "Channels Requested",
+        "Request Band",
+        "Start Frequency (MHz)",
+        "Center Frequency (MHz)",
+        "End Frequency (MHz)",
+        "Bandwidth (MHz)",
+        "Power (W)",
+        "Tech Category",
+        "System / Platform",
+        "Location",
+        "NTC Area",
+        "Grid / MGRS",
+        "Altitude",
+        "Notes"
+    ],
+    "2400-2490 part 15": [
+        "Start Time",
+        "End Time",
+        "Unit",
+        "Sponsor",
+        "Equipment",
+        "Tech",
+        "Requested Frequency",
+        "Channels Requested",
+        "Request Band",
+        "Start Frequency (MHz)",
+        "Center Frequency (MHz)",
+        "End Frequency (MHz)",
+        "Bandwidth (MHz)",
+        "Bandwidth (MHz)",
+        "Tech Category",
+        "System / Platform",
+        "Location",
+        "NTC Area",
+        "Grid / MGRS",
+        "Power (W)",
+        "Altitude",
+        "Notes"
+    ],
+    "4400-4940": [
+        "Start Time",
+        "End Time",
+        "Unit",
+        "Sponsor",
+        "Equipment",
+        "Tech",
+        "Requested Frequency",
+        "Channels Requested",
+        "Request Band",
+        "Start Frequency (MHz)",
+        "Center Frequency (MHz)",
+        "End Frequency (MHz)",
+        "Bandwidth (MHz)",
+        "Power (W)",
+        "Tech Category",
+        "System / Platform",
+        "Location",
+        "NTC Area",
+        "Grid / MGRS",
+        "Altitude",
+        "Notes"
+    ],
+    "5100-5900 part 15": [
+        "Start Time",
+        "End Time",
+        "Unit",
+        "Sponsor",
+        "Equipment",
+        "Tech",
+        "Requested Frequency",
+        "Channels Requested",
+        "Request Band",
+        "Start Frequency (MHz)",
+        "Center Frequency (MHz)",
+        "End Frequency (MHz)",
+        "Bandwidth (MHz)",
+        "Bandwidth (MHz)",
+        "Tech Category",
+        "System / Platform",
+        "Location",
+        "NTC Area",
+        "Grid / MGRS",
+        "Power (W)",
+        "Altitude",
+        "Notes"
+    ],
+    "9200-10000": [
+        "Start Time",
+        "End Time",
+        "Unit",
+        "Sponsor",
+        "Equipment",
+        "Tech",
+        "Requested Frequency",
+        "Channels Requested",
+        "Request Band",
+        "Center Frequency (MHz)",
+        "Start Frequency (MHz)",
+        "End Frequency (MHz)",
+        "Bandwidth (MHz)",
+        "Power (W)",
+        "Tech Category",
+        "System / Platform",
+        "Location",
+        "NTC Area",
+        "Grid / MGRS",
+        "Altitude",
+        "Notes"
+    ],
+    "15700-17700": [
+        "Start Time",
+        "End Time",
+        "Unit",
+        "Sponsor",
+        "Equipment",
+        "Tech",
+        "Location",
+        "Requested Frequency",
+        "Channels Requested",
+        "Request Band",
+        "Center Frequency (MHz)",
+        "Start Frequency (MHz)",
+        "End Frequency (MHz)",
+        "Bandwidth (MHz)",
+        "Power (W)",
+        "Tech Category",
+        "System / Platform",
+        "NTC Area",
+        "Grid / MGRS",
+        "Altitude",
+        "Notes"
+    ],
+    "SATCOM-CELL-EW": [
+        "Start Time",
+        "End Time",
+        "Unit",
+        "Sponsor",
+        "Equipment",
+        "Tech",
+        "Requested Frequency",
+        "Channels Requested",
+        "Request Band",
+        "Start Frequency (MHz)",
+        "Center Frequency (MHz)",
+        "End Frequency (MHz)",
+        "Bandwidth (MHz)",
+        "Power (W)",
+        "Tech Category",
+        "System / Platform",
+        "Request Status",
+        "Location",
+        "NTC Area",
+        "Grid / MGRS",
+        "Altitude",
+        "Notes"
+    ]
+}
+
+EXACT_WORKBOOK_SHEET_ORDER_NORM = [
+    re.sub(r"[^a-z0-9]+", "", str(s).lower())
+    for s in EXACT_WORKBOOK_SHEET_ORDER
+]
+
+EXACT_WORKBOOK_COLUMN_SCHEMA_NORM = {
+    re.sub(r"[^a-z0-9]+", "", str(sheet).lower()): cols
+    for sheet, cols in EXACT_WORKBOOK_COLUMN_SCHEMA.items()
+}
+
+
+def normalize_sheet_key(sheet_name):
+    return re.sub(r"[^a-z0-9]+", "", str(sheet_name or "").lower())
+
+
+def get_exact_sheet_name(sheet_name):
+    """
+    Return the exact workbook sheet name from the template if it matches.
+    This prevents renaming/reformatting workbook tabs.
+    """
+    key = normalize_sheet_key(sheet_name)
+    for exact in EXACT_WORKBOOK_SHEET_ORDER:
+        if normalize_sheet_key(exact) == key:
+            return exact
+    return str(sheet_name)
+
+
+def get_exact_template_columns(sheet_name):
+    exact = get_exact_sheet_name(sheet_name)
+    if exact in EXACT_WORKBOOK_COLUMN_SCHEMA:
+        return list(EXACT_WORKBOOK_COLUMN_SCHEMA[exact])
+    key = normalize_sheet_key(sheet_name)
+    return list(EXACT_WORKBOOK_COLUMN_SCHEMA_NORM.get(key, []))
+
+
+def order_sheet_names_exact(sheet_names):
+    """
+    Sort workbook sheets exactly like the uploaded template.
+    Unknown sheets are appended after the template sheets.
+    """
+    sheet_names = [str(s) for s in sheet_names]
+    normalized_to_actual = {normalize_sheet_key(s): s for s in sheet_names}
+
+    ordered = []
+    used = set()
+
+    for exact in EXACT_WORKBOOK_SHEET_ORDER:
+        key = normalize_sheet_key(exact)
+        if key in normalized_to_actual:
+            # Display using the exact template name.
+            ordered.append(exact)
+            used.add(key)
+
+    for s in sheet_names:
+        key = normalize_sheet_key(s)
+        if key not in used:
+            ordered.append(s)
+
+    return ordered
+
+
+def enforce_exact_workbook_sheet_columns(df, sheet_name=None):
+    """
+    For a known template sheet, force the dataframe columns to the exact
+    column names/order from the uploaded workbook. Missing columns are added.
+    Extra columns are dropped only when the sheet has a template schema.
+    """
+    if df is None:
+        return df
+
+    out = df.copy()
+    template_cols = get_exact_template_columns(sheet_name)
+
+    if template_cols:
+        # Rename common Active/Locked casing only; do not rename user columns aggressively.
+        rename_map = {}
+        for c in list(out.columns):
+            low = str(c).strip().lower()
+            if low == "active" and "Active" in template_cols:
+                rename_map[c] = "Active"
+            elif low in ["locked", "lock"] and "Locked" in template_cols:
+                rename_map[c] = "Locked"
+        if rename_map:
+            out = out.rename(columns=rename_map)
+
+        for col in template_cols:
+            if col not in out.columns:
+                if col == "Active":
+                    out[col] = True
+                elif col == "Locked":
+                    out[col] = False
+                else:
+                    out[col] = None
+
+        return out[template_cols].reset_index(drop=True)
+
+    # Fallback for unknown sheets.
+    return out.reset_index(drop=True)
+
+
+def enforce_exact_workbook_dict(sheet_dict):
+    """
+    Preserve exact sheet order and exact sheet column order.
+    """
+    if sheet_dict is None:
+        return {}
+
+    fixed = {}
+    for sheet_name in order_sheet_names_exact(list(sheet_dict.keys())):
+        # Use the actual dataframe from matching key if needed.
+        actual_key = None
+        for k in sheet_dict.keys():
+            if normalize_sheet_key(k) == normalize_sheet_key(sheet_name):
+                actual_key = k
+                break
+        if actual_key is None:
+            continue
+
+        exact_name = get_exact_sheet_name(sheet_name)
+        fixed[exact_name] = enforce_exact_workbook_sheet_columns(sheet_dict[actual_key], exact_name)
+
+    return fixed
+
+
+def normalize_uploaded_df(df, sheet_name=None):
+    """
+    Normalize a dataframe without changing the workbook design.
+    If sheet_name is from the uploaded workbook template, preserve that exact column order.
     """
     if df is None:
         return pd.DataFrame()
 
     out = df.copy()
 
-    # Drop fully empty rows/columns.
     try:
         out = out.dropna(axis=0, how="all").dropna(axis=1, how="all")
     except Exception:
         pass
 
-    # Normalize common column names without reordering the user's other columns.
-    rename_map = {}
-    for c in list(out.columns):
-        raw = str(c).strip()
-        low = raw.lower()
-        compact = re.sub(r"[^a-z0-9]+", "", low)
-
-        if compact == "active":
-            rename_map[c] = "Active"
-        elif compact in ["locked", "lock", "frequencylocked"]:
-            rename_map[c] = "Locked"
-        elif compact in ["starttime", "starttimeorig"]:
-            rename_map[c] = "Start Time"
-        elif compact in ["endtime", "endtimeorig"]:
-            rename_map[c] = "End Time"
-        elif compact in ["equipment", "system", "systemplatform"]:
-            rename_map[c] = "Equipment"
-        elif compact in ["centerfrequencymhz", "centerfrequency", "centerfreqmhz", "centerf"]:
-            rename_map[c] = "Center Frequency (MHz)"
-        elif compact in ["startfrequencymhz", "startfrequency", "startfreqmhz", "startf"]:
-            rename_map[c] = "Start Frequency (MHz)"
-        elif compact in ["endfrequencymhz", "endfrequency", "endfreqmhz", "endf"]:
-            rename_map[c] = "End Frequency (MHz)"
-        elif compact in ["bandwidthmhz", "bandwidth", "bw"]:
-            rename_map[c] = "Bandwidth (MHz)"
-        elif compact in ["powerw", "powerwatts", "power"]:
-            rename_map[c] = "Power (W)"
-        elif compact in ["powerdbm", "dbm"]:
-            rename_map[c] = "Power (dBm)"
-        elif compact == "tech":
-            rename_map[c] = "Tech"
-        elif compact == "unit":
-            rename_map[c] = "Unit"
-        elif compact in ["sponsor", "sponser"]:
-            rename_map[c] = "Sponsor"
-        elif compact == "latitude":
-            rename_map[c] = "Latitude"
-        elif compact == "longitude":
-            rename_map[c] = "Longitude"
-        elif compact in ["location", "ntclocation"]:
-            rename_map[c] = "Location"
-        elif compact in ["antennheight", "antennaheight"]:
-            rename_map[c] = "Antenna Height"
-        elif compact in ["coverageradius", "radius"]:
-            rename_map[c] = "Coverage Radius"
-        elif compact in ["sitename", "site"]:
-            rename_map[c] = "Site Name"
-        elif compact in ["notes", "note"]:
-            rename_map[c] = "Notes"
-        elif compact in ["mgrs", "gridmgrs", "grid"]:
-            rename_map[c] = "MGRS"
-        elif compact == "usng":
-            rename_map[c] = "USNG"
-
-    if rename_map:
-        out = out.rename(columns=rename_map)
-
-    # Add/normalize Active and Locked.
-    if "Active" not in out.columns:
-        out.insert(0, "Active", True)
-    else:
-        try:
-            out["Active"] = out["Active"].apply(lambda v: to_bool_flag(v, True) if "to_bool_flag" in globals() else bool(v))
-        except Exception:
-            pass
-
-    if "Locked" not in out.columns:
-        insert_at = 1 if "Active" in out.columns else 0
-        out.insert(insert_at, "Locked", False)
-    else:
-        try:
-            out["Locked"] = out["Locked"].apply(lambda v: to_bool_flag(v, False) if "to_bool_flag" in globals() else bool(v))
-        except Exception:
-            pass
-
-    # Final safe order: Active, Locked, everything else as-is.
-    ordered_cols = ["Active", "Locked"]
-    for c in out.columns:
-        if c not in ordered_cols:
-            ordered_cols.append(c)
-
-    return out[ordered_cols].reset_index(drop=True)
+    return enforce_exact_workbook_sheet_columns(out, sheet_name=sheet_name)
 
 def app_to_internal(df):
     out = df.copy()
@@ -5723,7 +6063,7 @@ for i, sheet_name in enumerate(sheet_names):
             disabled=not can_edit,
         )
 
-edited_df = normalize_uploaded_df(edited_sheets[active_sheet_name])
+edited_df = normalize_uploaded_df(edited_sheets[active_sheet_name], sheet_name=active_sheet_name)
 
 s1, s2, s3, s4 = st.columns([1, 1, 1.2, 1.2])
 with s1:
@@ -6162,7 +6502,8 @@ with tab9:
         c_high, c_med, c_low = st.columns(3)
         c_high.metric("High", high_count)
         c_med.metric("Medium", medium_count)
-        c_low.metric("Low", low_count)
+        c_low.m
+etric("Low", low_count)
 
         st.dataframe(rec_df, use_container_width=True)
 
