@@ -1,18 +1,3 @@
-None selected 
-
-Skip to content
-Using Gmail with screen readers
-Conversations
-me
-(no subject)
- 
-Attachment:
-streamlit_supabase_app_v48_4_upload_keyerror_fix.py
-11:11 PM
-81% of 15 GB used
-Terms · Privacy · Program Policies
-Last account activity: 0 minutes ago
-Open in 1 other location · Details
 # - V48.4: Fixes upload KeyError: 0 by safely handling single/list uploads and Excel sheet dictionaries.
 # - V48.3: Fixes normalize_uploaded_df by removing out.columns dependency completely.
 # - V48.2: Adds full upload/import traceback diagnostics and safer workbook import handling.
