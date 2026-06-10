@@ -6535,8 +6535,7 @@ with st.expander("V49 Improved Allocation Plan Builder — channel-count aware",
                 pass
 
 
-with st.expander("Build Allocation Plan from Request Tracker + 
-Approved Frequencies", expanded=False):
+with st.expander("Build Allocation Plan from Request Tracker + Approved Frequencies", expanded=False):
     st.markdown(
         "Upload the **Request Tracker** and **Approved Frequencies** file. "
         "The engine will preserve your allocation workbook format and append planning fields to the right."
