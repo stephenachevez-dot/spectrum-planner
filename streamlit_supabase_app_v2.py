@@ -929,6 +929,12 @@ APP_COLUMNS = [
 ]
 
 STANDARD_RENAME = {
+    "Active": "Active",
+    "Enabled": "Active",
+    "In Use": "Active",
+    "Use": "Active",
+    "Include": "Active",
+    
     "StartTime": "Start Time",
     "EndTime": "End Time",
     "Start Time": "Start Time",
@@ -1000,14 +1006,10 @@ STANDARD_RENAME = {
     "USNG": "USNG",
     "Grid": "MGRS",
     "Military Grid": "MGRS",
-    "Active": "Active",
-    "Enabled": "Active",
-    "In Use": "Active",
-    "Use": "Active",
-    "Include": "Active",
 }
 
 INTERNAL_RENAME = {
+    "Active": "Active",
     "Start Time": "StartTime",
     "End Time": "EndTime",
     "Equipment": "Equipment",
@@ -1028,7 +1030,6 @@ INTERNAL_RENAME = {
     "Site Name": "SiteName",
     "MGRS": "MGRS",
     "USNG": "USNG",
-    "Active": "Active",
 }
 
 def now_iso():
