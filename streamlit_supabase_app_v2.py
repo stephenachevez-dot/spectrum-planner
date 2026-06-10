@@ -1,7 +1,3 @@
-# streamlit_supabase_app_v2.py
-# Spectrum Planner — Streamlit + Supabase
-# JSON-backed, polished, and safer deconfliction.
-# Fixes:
 # - Avoids Supabase column mismatch by saving allocation rows in row_data JSONB.
 # - Power plot center-frequency labels are near the top inside boxes.
 # - Deconfliction labels are inside boxes.
@@ -4256,7 +4252,7 @@ def ae_export_allocation_workbook(rows, needs_review, conflicts):
         conf_ws.column_dimensions[get_column_letter(col)].width = 24
 
     # Frequency Reuse Matrix
-    reuse = defaultdict(lambda: {"count": 0, "areas": set(), "units": set(), "sponsors": set()})
+    reuse = collections.defaultdict(lambda: {"count": 0, "areas": set(), "units": set(), "sponsors": set()})
     for r in rows:
         key = (r.get("Reuse Group ID"), r.get("Center Frequency (MHz)"), r.get("Bandwidth (MHz)"), r.get("Tech"))
         reuse[key]["count"] += 1
