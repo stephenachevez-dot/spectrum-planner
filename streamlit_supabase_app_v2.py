@@ -6520,7 +6520,7 @@ with st.expander("Import / replace table from file or pasted CSV", expanded=(len
                     st.success("Pasted CSV saved.")
                     st.rerun()
             except Exception as e:
-            st.error(f"Could not parse pasted CSV: {e}")
+                st.error(f"Could not parse pasted CSV: {e}")
 
 
 st.subheader("Shared allocation workbook")
