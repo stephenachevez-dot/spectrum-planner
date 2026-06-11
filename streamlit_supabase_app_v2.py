@@ -1,3 +1,11 @@
+import streamlit as st
+st.set_page_config(page_title="Spectrum Planner", layout="wide")
+
+# - V9: Fixes lower-power foreground drawing with controlled z-order, transparency, and label priority.
+# - V8: Adds workbook backup/restore and safer autosave-to-session workflow.
+# - V7: Adds visual extraction/export buttons for PNG and all-visuals PDF.
+# - V6: Smart Planner moved from tab into sidebar controls.
+# - V5: Horizontal frequency labels + lower-power systems drawn in front.
 import io
 import re
 import hashlib
