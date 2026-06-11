@@ -6944,7 +6944,8 @@ def build_deconflict_plot(d0, grp_field, palette, dark, tick_major, tick_minor, 
                 label = ""
             if label:
                 ax.text(x0+w/2, y0+h/2, label, ha="center", va="center", fontsize=8, fontweight="bold", color=("white" if dark else "black"), clip_on=True)
-        if show_shift_label and "ShiftSec" in d.columns and row["BoxHeightMin"] >= float(min_label_height_min):
+        if show_shift_label and "ShiftSec" in d
+.columns and row["BoxHeightMin"] >= float(min_label_height_min):
             shift = row.get("ShiftSec", np.nan)
             if pd.notna(shift) and abs(shift) > 0:
                 ax.text(x0+w/2, min(y0+h-.2, y0+.2), f"Δ {round(shift/60):.0f}m", ha="center", va="center", fontsize=7, fontweight="bold", color=("white" if dark else "black"), clip_on=True)
