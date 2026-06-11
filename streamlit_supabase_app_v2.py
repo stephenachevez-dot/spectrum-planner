@@ -1,4 +1,5 @@
 import streamlit as st
+# - V7: Adds visual extraction/export buttons for PNG and all-visuals PDF.
 # - V6: Smart Planner moved from tab into sidebar controls.
 # - V5: Horizontal frequency labels + lower-power systems drawn in front.
 import io
@@ -10,6 +11,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+from matplotlib.backends.backend_pdf import PdfPages
 
 
 # ============================================================
@@ -1186,6 +1188,74 @@ def smart_full_deconflict(df: pd.DataFrame, day_start: float, day_end: float, ti
 
 
 
+
+def figure_to_png_bytes(fig, dpi=220):
+    """Convert a matplotlib figure to PNG bytes for download."""
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def figures_to_pdf_bytes(figures):
+    """Convert multiple matplotlib figures into a single PDF bytes object."""
+    buffer = io.BytesIO()
+    with PdfPages(buffer) as pdf:
+        for fig in figures:
+            pdf.savefig(fig, bbox_inches="tight", facecolor=fig.get_facecolor())
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def safe_filename(text):
+    text = str(text or "visual").strip()
+    text = re.sub(r"[^A-Za-z0-9_-]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text or "visual"
+
+
+def visual_download_button(fig, label, filename, key):
+    """Standard single visual PNG export button."""
+    png_bytes = figure_to_png_bytes(fig)
+    st.download_button(
+        label=label,
+        data=png_bytes,
+        file_name=filename,
+        mime="image/png",
+        use_container_width=True,
+        key=key,
+    )
+
+
+def build_all_visuals_for_export(df, dark=True):
+    """
+    Builds the main briefing visuals without displaying them:
+    - Time x Frequency by Tech
+    - Power View by Tech
+    - Equipment Deconfliction
+    - Unit Deconfliction
+    - Sponsor Deconfliction
+    """
+    figures = []
+
+    fig1, _, _ = time_frequency_chart(df, color_by="Tech", dark=dark, title="Time x Frequency - by Tech")
+    figures.append(fig1)
+
+    fig2, _ = power_chart(df, color_by="Tech", dark=dark)
+    figures.append(fig2)
+
+    fig3, _, _ = time_frequency_chart(df, color_by="Equipment", dark=dark, title="Time x Frequency - by Equipment")
+    figures.append(fig3)
+
+    fig4, _, _ = time_frequency_chart(df, color_by="Unit", dark=dark, title="Time x Frequency - by Unit")
+    figures.append(fig4)
+
+    fig5, _, _ = time_frequency_chart(df, color_by="Sponsor", dark=dark, title="Time x Frequency - by Sponsor")
+    figures.append(fig5)
+
+    return figures
+
+
 # ============================================================
 # UI
 # ============================================================
@@ -1265,6 +1335,31 @@ m1, m2, m3 = st.columns(3)
 m1.metric("Active rows in visuals", len(operational_df))
 m2.metric("Inactive rows hidden", int((normalize_columns(edited_df)["Active"] == False).sum()))
 m3.metric("Equipment conflicts", len(conflict_df))
+
+with st.expander("Extract / Export Visuals", expanded=False):
+    st.caption("Export briefing visuals as PNG or one combined PDF. Exports use the active sheet and current Active filters.")
+    e1, e2 = st.columns(2)
+
+    with e1:
+        if st.button("Prepare all visuals for PDF", use_container_width=True):
+            st.session_state["export_visual_figures"] = build_all_visuals_for_export(edited_df, dark=dark)
+            st.success("All visuals prepared. Use the PDF download button.")
+
+    with e2:
+        if "export_visual_figures" in st.session_state:
+            pdf_bytes = figures_to_pdf_bytes(st.session_state["export_visual_figures"])
+            st.download_button(
+                "Download all visuals PDF",
+                data=pdf_bytes,
+                file_name=f"{safe_filename(active_sheet)}_all_visuals.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                key="download_all_visuals_pdf",
+            )
+        else:
+            st.info("Click Prepare all visuals for PDF first.")
+
+
 
 # ============================================================
 # Smart Planner moved into Controls
@@ -1460,24 +1555,54 @@ with tabs[0]:
     fig, plotted, rows_drawn = time_frequency_chart(edited_df, color_by=color_by, dark=dark)
     st.pyplot(fig, use_container_width=True)
     st.caption(f"Showing {len(plotted)} active row(s). Frequency labels are horizontal. Lower-power systems are drawn in front.")
+    visual_download_button(
+        fig,
+        "Download Time x Frequency PNG",
+        f"{safe_filename(active_sheet)}_time_frequency.png",
+        "download_time_frequency_png",
+    )
 
 with tabs[1]:
     color_by = st.selectbox("Color boxes by", ["Tech", "Equipment", "Unit", "Sponsor"], index=0, key="power_color")
     fig, plotted = power_chart(edited_df, color_by=color_by, dark=dark)
     st.pyplot(fig, use_container_width=True)
     st.caption(f"Showing {len(plotted)} active row(s). Legend colors match box colors. Lower-power systems are drawn in front.")
+    visual_download_button(
+        fig,
+        "Download Power View PNG",
+        f"{safe_filename(active_sheet)}_power_view.png",
+        "download_power_view_png",
+    )
 
 with tabs[2]:
     fig, plotted, _ = time_frequency_chart(edited_df, color_by="Equipment", dark=dark, title="Time × Frequency — by Equipment")
     st.pyplot(fig, use_container_width=True)
+    visual_download_button(
+        fig,
+        "Download Equipment Deconfliction PNG",
+        f"{safe_filename(active_sheet)}_equipment_deconfliction.png",
+        "download_equipment_deconfliction_png",
+    )
 
 with tabs[3]:
     fig, plotted, _ = time_frequency_chart(edited_df, color_by="Unit", dark=dark, title="Time × Frequency — by Unit")
     st.pyplot(fig, use_container_width=True)
+    visual_download_button(
+        fig,
+        "Download Unit Deconfliction PNG",
+        f"{safe_filename(active_sheet)}_unit_deconfliction.png",
+        "download_unit_deconfliction_png",
+    )
 
 with tabs[4]:
     fig, plotted, _ = time_frequency_chart(edited_df, color_by="Sponsor", dark=dark, title="Time × Frequency — by Sponsor")
     st.pyplot(fig, use_container_width=True)
+    visual_download_button(
+        fig,
+        "Download Sponsor Deconfliction PNG",
+        f"{safe_filename(active_sheet)}_sponsor_deconfliction.png",
+        "download_sponsor_deconfliction_png",
+    )
 
 with tabs[5]:
     st.subheader("Conflict Tables")
