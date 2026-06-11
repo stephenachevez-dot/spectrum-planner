@@ -1,3 +1,4 @@
+import streamlit as st
 import io
 import re
 import hashlib
@@ -5,7 +6,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import streamlit as st
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
@@ -187,6 +187,9 @@ def find_col(df: pd.DataFrame, names):
 def normalize_columns(df: pd.DataFrame, add_missing=True) -> pd.DataFrame:
     out = df.copy()
 
+    # Remove blank Excel columns such as Unnamed: 0.
+    out = out.loc[:, [c for c in out.columns if not str(c).lower().startswith("unnamed")]]
+
     rename = {}
     for col in out.columns:
         k = key_name(col)
@@ -194,6 +197,12 @@ def normalize_columns(df: pd.DataFrame, add_missing=True) -> pd.DataFrame:
             rename[col] = RENAME_MAP[k]
 
     out = out.rename(columns=rename)
+
+    # CRITICAL FIX:
+    # Streamlit st.data_editor crashes if duplicate column names exist.
+    # After renaming, columns like Power, PowerW, Power (W) can all become Power (W).
+    # Keep the first one and drop duplicate column names.
+    out = out.loc[:, ~pd.Index(out.columns).duplicated(keep="first")].copy()
 
     if add_missing:
         for col in APP_COLUMNS:
@@ -215,12 +224,14 @@ def normalize_columns(df: pd.DataFrame, add_missing=True) -> pd.DataFrame:
     else:
         out["Locked"] = False
 
+    # Final duplicate protection before st.data_editor.
+    out = out.loc[:, ~pd.Index(out.columns).duplicated(keep="first")].copy()
+
     preferred = [c for c in APP_COLUMNS if c in out.columns]
     extras = [c for c in out.columns if c not in preferred]
     out = out[preferred + extras]
 
     return out
-
 
 def recalc_start_end(df: pd.DataFrame) -> pd.DataFrame:
     out = normalize_columns(df, add_missing=False)
@@ -694,6 +705,8 @@ current_df = recalc_start_end(current_df)
 
 st.subheader("Shared allocation workbook")
 st.caption("Use Active to turn rows on/off. Use Locked to prevent the auto-planner from moving a frequency.")
+
+current_df = current_df.loc[:, ~pd.Index(current_df.columns).duplicated(keep="first")].copy()
 
 edited_df = st.data_editor(
     current_df,
