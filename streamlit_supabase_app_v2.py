@@ -600,74 +600,283 @@ def load_file(uploaded_file):
     return sheets
 
 
-def smart_frequency_deconflict(df: pd.DataFrame, low_mhz: float, high_mhz: float, step_mhz: float):
-    out = active_only(df, show_inactive=True)
+def intervals_overlap(a1, a2, b1, b2) -> bool:
+    return max(a1, b1) < min(a2, b2)
+
+
+def row_window(row, start_time_col, end_time_col):
+    t1 = time_to_hours(row.get(start_time_col)) if start_time_col else None
+    t2 = time_to_hours(row.get(end_time_col)) if end_time_col else None
+
+    if t1 is None:
+        t1 = 0.0
+
+    if t2 is None or t2 <= t1:
+        t2 = t1 + 2.0
+
+    return t1, t2
+
+
+def row_frequency_interval(row, center_col, bw_col):
+    center = to_float(row.get(center_col))
+    bw = to_float(row.get(bw_col))
+
+    if center is None or bw is None or bw <= 0:
+        return None, None, None, None
+
+    return center, bw, center - bw / 2.0, center + bw / 2.0
+
+
+def get_conflict_row_indexes(df: pd.DataFrame):
+    working = active_only(df, show_inactive=False)
+
+    center_col = find_col(working, ["Center Frequency (MHz)", "Center Frequency", "CenterF", "Frequency"])
+    bw_col = find_col(working, ["Bandwidth (MHz)", "Bandwidth", "BW"])
+    start_time_col = find_col(working, ["Start Time", "StartTime", "Start"])
+    end_time_col = find_col(working, ["End Time", "EndTime", "End"])
+
+    if center_col is None or bw_col is None:
+        return set()
+
+    conflict_indexes = set()
+
+    for i in range(len(working)):
+        row_a = working.iloc[i]
+        ac, abw, af1, af2 = row_frequency_interval(row_a, center_col, bw_col)
+        if ac is None:
+            continue
+        at1, at2 = row_window(row_a, start_time_col, end_time_col)
+
+        for j in range(i + 1, len(working)):
+            row_b = working.iloc[j]
+            bc, bbw, bf1, bf2 = row_frequency_interval(row_b, center_col, bw_col)
+            if bc is None:
+                continue
+            bt1, bt2 = row_window(row_b, start_time_col, end_time_col)
+
+            if intervals_overlap(af1, af2, bf1, bf2) and intervals_overlap(at1, at2, bt1, bt2):
+                # Map back to original row indexes by using dataframe index.
+                conflict_indexes.add(working.index[i])
+                conflict_indexes.add(working.index[j])
+
+    return conflict_indexes
+
+
+def frequency_is_open(candidate_center, candidate_bw, moving_index, df, center_col, bw_col, start_time_col, end_time_col, guard_mhz):
+    candidate_start = candidate_center - candidate_bw / 2.0 - guard_mhz
+    candidate_end = candidate_center + candidate_bw / 2.0 + guard_mhz
+
+    moving_row = df.loc[moving_index]
+    moving_t1, moving_t2 = row_window(moving_row, start_time_col, end_time_col)
+
+    for idx, other in df.iterrows():
+        if idx == moving_index:
+            continue
+
+        if not to_bool(other.get("Active"), True):
+            continue
+
+        other_center, other_bw, other_start, other_end = row_frequency_interval(other, center_col, bw_col)
+        if other_center is None:
+            continue
+
+        other_t1, other_t2 = row_window(other, start_time_col, end_time_col)
+
+        # Only care about rows that overlap in time.
+        if not intervals_overlap(moving_t1, moving_t2, other_t1, other_t2):
+            continue
+
+        # Then check frequency overlap with guard band.
+        if intervals_overlap(candidate_start, candidate_end, other_start, other_end):
+            return False
+
+    return True
+
+
+def build_candidate_centers(low_mhz, high_mhz, step_mhz, bw_mhz, old_center=None):
+    centers = []
+    x = low_mhz + bw_mhz / 2.0
+    last = high_mhz - bw_mhz / 2.0
+
+    while x <= last + 1e-9:
+        centers.append(round(x, 6))
+        x += step_mhz
+
+    if old_center is not None:
+        centers = sorted(centers, key=lambda c: (abs(c - old_center), c))
+
+    return centers
+
+
+def smart_frequency_deconflict(df: pd.DataFrame, low_mhz: float, high_mhz: float, step_mhz: float, guard_mhz: float = 0.0, max_passes: int = 5):
+    """
+    Smart Frequency Deconfliction.
+
+    What it does:
+    - Uses ONLY active rows for conflict detection.
+    - Inactive rows stay saved but are ignored.
+    - Locked rows are not moved.
+    - Start/End Time remain unchanged.
+    - Bandwidth remains unchanged.
+    - Moves center frequency to the nearest open slot inside the search range.
+    - Repeats passes until conflicts stop improving or are cleared.
+    """
+
+    out = normalize_columns(df, add_missing=True)
+    out = recalc_start_end(out)
 
     center_col = find_col(out, ["Center Frequency (MHz)", "Center Frequency", "CenterF", "Frequency"])
     bw_col = find_col(out, ["Bandwidth (MHz)", "Bandwidth", "BW"])
+    start_time_col = find_col(out, ["Start Time", "StartTime", "Start"])
+    end_time_col = find_col(out, ["End Time", "EndTime", "End"])
+    equipment_col = find_col(out, ["Equipment"])
+    unit_col = find_col(out, ["Unit"])
+    tech_col = find_col(out, ["Tech"])
 
     if center_col is None or bw_col is None:
         return out, pd.DataFrame([{"Message": "Center Frequency and Bandwidth columns are required."}])
 
+    if step_mhz <= 0:
+        return out, pd.DataFrame([{"Message": "Step MHz must be greater than 0."}])
+
     moves = []
+    previous_conflict_count = None
 
-    active_df = active_only(out, show_inactive=False)
-    conflicts = detect_conflicts(active_df)
+    for pass_number in range(1, max_passes + 1):
+        conflict_table = detect_conflicts(out)
+        conflict_count = len(conflict_table)
 
-    if conflicts.empty:
-        return out, pd.DataFrame([{"Message": "No conflicts detected."}])
+        if conflict_count == 0:
+            break
 
-    conflict_rows = set()
-    for _, row in conflicts.iterrows():
-        conflict_rows.add(int(row["Row A"]) - 1)
-        conflict_rows.add(int(row["Row B"]) - 1)
+        if previous_conflict_count is not None and conflict_count >= previous_conflict_count:
+            # Stop if the previous pass did not improve the plan.
+            break
 
-    candidates = []
-    x = low_mhz
-    while x <= high_mhz:
-        candidates.append(round(x, 6))
-        x += step_mhz
+        previous_conflict_count = conflict_count
+        conflict_indexes = get_conflict_row_indexes(out)
 
-    for idx in sorted(conflict_rows):
-        if idx not in out.index:
-            continue
+        if not conflict_indexes:
+            break
 
-        row = out.loc[idx]
+        # Move the worst rows first: wider bandwidth first, then center.
+        ranked_indexes = []
+        for idx in conflict_indexes:
+            if idx not in out.index:
+                continue
+            row = out.loc[idx]
 
-        if not to_bool(row.get("Active"), True):
-            continue
-
-        if to_bool(row.get("Locked"), False):
-            continue
-
-        old_center = to_float(row.get(center_col))
-        bw = to_float(row.get(bw_col))
-
-        if old_center is None or bw is None or bw <= 0:
-            continue
-
-        for candidate in candidates:
-            if candidate - bw / 2 < low_mhz or candidate + bw / 2 > high_mhz:
+            if not to_bool(row.get("Active"), True):
                 continue
 
-            test = out.copy()
-            test.at[idx, center_col] = candidate
-            test = recalc_start_end(test)
+            if to_bool(row.get("Locked"), False):
+                continue
 
-            if detect_conflicts(test).empty:
-                out = test
+            center, bw, f1, f2 = row_frequency_interval(row, center_col, bw_col)
+            if center is None:
+                continue
+
+            ranked_indexes.append((idx, bw, center))
+
+        ranked_indexes = sorted(ranked_indexes, key=lambda x: (-x[1], x[2]))
+
+        moved_this_pass = 0
+
+        for idx, bw, old_center in ranked_indexes:
+            row = out.loc[idx]
+
+            candidates = build_candidate_centers(
+                low_mhz=low_mhz,
+                high_mhz=high_mhz,
+                step_mhz=step_mhz,
+                bw_mhz=bw,
+                old_center=old_center,
+            )
+
+            best_candidate = None
+            best_conflict_count = None
+
+            for candidate in candidates:
+                if not frequency_is_open(
+                    candidate_center=candidate,
+                    candidate_bw=bw,
+                    moving_index=idx,
+                    df=out,
+                    center_col=center_col,
+                    bw_col=bw_col,
+                    start_time_col=start_time_col,
+                    end_time_col=end_time_col,
+                    guard_mhz=guard_mhz,
+                ):
+                    continue
+
+                test = out.copy()
+                test.at[idx, center_col] = candidate
+                test = recalc_start_end(test)
+                test_conflicts = len(detect_conflicts(test))
+
+                if best_conflict_count is None or test_conflicts < best_conflict_count:
+                    best_conflict_count = test_conflicts
+                    best_candidate = candidate
+
+                # Perfect move for this row.
+                if test_conflicts < conflict_count:
+                    break
+
+            if best_candidate is not None:
+                before_conflicts = len(detect_conflicts(out))
+
+                out.at[idx, center_col] = best_candidate
+                out = recalc_start_end(out)
+
+                after_conflicts = len(detect_conflicts(out))
+
                 moves.append(
                     {
-                        "Row": idx + 1,
+                        "Pass": pass_number,
+                        "Row": int(idx) + 1,
+                        "Unit": row.get(unit_col, "") if unit_col else "",
+                        "Equipment": row.get(equipment_col, "") if equipment_col else "",
+                        "Tech": row.get(tech_col, "") if tech_col else "",
                         "Old Center Frequency (MHz)": old_center,
-                        "New Center Frequency (MHz)": candidate,
+                        "New Center Frequency (MHz)": best_candidate,
                         "Bandwidth (MHz)": bw,
-                        "Action": "Moved frequency; time unchanged",
+                        "Start Time": row.get(start_time_col, "") if start_time_col else "",
+                        "End Time": row.get(end_time_col, "") if end_time_col else "",
+                        "Conflicts Before": before_conflicts,
+                        "Conflicts After": after_conflicts,
+                        "Action": "Moved center frequency; time window preserved",
                     }
                 )
-                break
 
-    return recalc_start_end(out), pd.DataFrame(moves)
+                moved_this_pass += 1
+
+        if moved_this_pass == 0:
+            break
+
+    out = recalc_start_end(out)
+    remaining_conflicts = len(detect_conflicts(out))
+
+    if not moves:
+        return out, pd.DataFrame(
+            [
+                {
+                    "Message": "No safe open frequency move found. Try widening the search range, lowering the step size, or unlocking rows.",
+                    "Remaining Conflicts": remaining_conflicts,
+                    "Search Low MHz": low_mhz,
+                    "Search High MHz": high_mhz,
+                    "Step MHz": step_mhz,
+                    "Guard MHz": guard_mhz,
+                }
+            ]
+        )
+
+    moves_df = pd.DataFrame(moves)
+    moves_df["Remaining Conflicts After Planner"] = remaining_conflicts
+
+    return out, moves_df
+
+
 
 
 # ============================================================
@@ -805,13 +1014,22 @@ with tabs[6]:
     st.subheader("Smart Planner — Auto Deconflict by Frequency")
     st.caption("Moves unlocked active rows to open frequency spots. Time windows stay unchanged.")
 
-    p1, p2, p3 = st.columns(3)
+    p1, p2, p3, p4, p5 = st.columns(5)
     low = p1.number_input("Search low MHz", value=2200.0, step=1.0)
     high = p2.number_input("Search high MHz", value=2300.0, step=1.0)
     step = p3.number_input("Step MHz", value=1.0, min_value=0.001, step=0.5)
+    guard = p4.number_input("Guard MHz", value=0.0, min_value=0.0, step=0.1)
+    max_passes = p5.number_input("Max passes", value=5, min_value=1, max_value=20, step=1)
 
     if st.button("Auto deconflict by frequency", type="primary", use_container_width=True):
-        new_df, moves = smart_frequency_deconflict(edited_df, low, high, step)
+        new_df, moves = smart_frequency_deconflict(
+            edited_df,
+            low_mhz=low,
+            high_mhz=high,
+            step_mhz=step,
+            guard_mhz=guard,
+            max_passes=int(max_passes),
+        )
         st.session_state["pending_planner_df"] = new_df
         st.session_state["pending_planner_moves"] = moves
 
