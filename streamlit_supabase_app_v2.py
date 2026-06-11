@@ -920,37 +920,41 @@ sb_admin = get_supabase_admin()
 APP_COLUMNS = [
     "Active",
     "Locked",
-    "Start Time", "End Time", "Equipment", "Center Frequency (MHz)",
-    "Start Frequency (MHz)", "End Frequency (MHz)", "Bandwidth (MHz)",
-    "Power (W)", "Power (dBm)", "Tech", "Unit", "Notes",
-    "Latitude", "Longitude", "Location",
-    "Antenna Height", "Coverage Radius", "Site Name",
-    "MGRS", "USNG",
+    "Start Time", "End Time", "Unit", "Sponsor","Equipment", "Tech",
+    "Start Frequency (MHz)", "Center Frequency (MHz)", "End Frequency (MHz)",
+    "Bandwidth (MHz)","Power (W)", "Power (dBm)", "Tech Category", "Latitude", 
+    "Longitude", "Location", "System/Platform", "Antenna Height", 
+    "Coverage Radius", "Site Name",  "MGRS", "USNG", "Notes",
 ]
 
+    
 STANDARD_RENAME = {
+    "Enabled": "Active",
+    "In Use": "Active",
+    "Use": "Active",
+    "Include": "Active",
+    
     "StartTime": "Start Time",
     "EndTime": "End Time",
     "Start Time": "Start Time",
     "End Time": "End Time",
 
-    "Equipment": "Equipment",
-    "Equip": "Equipment",
-    "Tech": "Tech",
     "Unit": "Unit",
-    "Notes": "Notes",
-
-    "CenterF": "Center Frequency (MHz)",
-    "Center Frequency": "Center Frequency (MHz)",
-    "Center Frequency (MHz)": "Center Frequency (MHz)",
-    "Center Freq": "Center Frequency (MHz)",
-    "Center Freq (MHz)": "Center Frequency (MHz)",
+    "Sponsor": "Sponsor",
+    "Equipment": "Equipment",
+    "Tech": "Tech",
 
     "StartF": "Start Frequency (MHz)",
     "Start Frequency": "Start Frequency (MHz)",
     "Start Frequency (MHz)": "Start Frequency (MHz)",
     "Start Freq": "Start Frequency (MHz)",
     "Start Freq (MHz)": "Start Frequency (MHz)",
+
+    "CenterF": "Center Frequency (MHz)",
+    "Center Frequency": "Center Frequency (MHz)",
+    "Center Frequency (MHz)": "Center Frequency (MHz)",
+    "Center Freq": "Center Frequency (MHz)",
+    "Center Freq (MHz)": "Center Frequency (MHz)",
 
     "EndF": "End Frequency (MHz)",
     "End Frequency": "End Frequency (MHz)",
@@ -1000,26 +1004,23 @@ STANDARD_RENAME = {
     "USNG": "USNG",
     "Grid": "MGRS",
     "Military Grid": "MGRS",
-    "Active": "Active",
-    "Enabled": "Active",
-    "In Use": "Active",
-    "Use": "Active",
-    "Include": "Active",
+
+
 }
 
 INTERNAL_RENAME = {
+    "Active": "Active",
     "Start Time": "StartTime",
     "End Time": "EndTime",
     "Equipment": "Equipment",
-    "Center Frequency (MHz)": "CenterF",
     "Start Frequency (MHz)": "StartF",
+    "Center Frequency (MHz)": "CenterF",
     "End Frequency (MHz)": "EndF",
     "Bandwidth (MHz)": "BW",
     "Power (W)": "PowerW",
     "Power (dBm)": "PowerdBm",
     "Tech": "Tech",
     "Unit": "Unit",
-    "Notes": "Notes",
     "Latitude": "Latitude",
     "Longitude": "Longitude",
     "Location": "Location",
@@ -1028,7 +1029,8 @@ INTERNAL_RENAME = {
     "Site Name": "SiteName",
     "MGRS": "MGRS",
     "USNG": "USNG",
-    "Active": "Active",
+    "Notes": "Notes",
+    
 }
 
 def now_iso():
