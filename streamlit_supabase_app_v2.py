@@ -1,10 +1,12 @@
 import streamlit as st
+# - V8: Adds workbook backup/restore and safer autosave-to-session workflow.
 # - V7: Adds visual extraction/export buttons for PNG and all-visuals PDF.
 # - V6: Smart Planner moved from tab into sidebar controls.
 # - V5: Horizontal frequency labels + lower-power systems drawn in front.
 import io
 import re
 import hashlib
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -621,6 +623,33 @@ def dataframe_to_xlsx(sheets: dict) -> bytes:
             normalize_columns(df, add_missing=True).to_excel(writer, sheet_name=safe_name, index=False)
     output.seek(0)
     return output.read()
+
+
+
+def timestamp_string():
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def update_active_sheet_in_session(sheet_name, df):
+    """Save the edited sheet into Streamlit session immediately."""
+    if "sheets" not in st.session_state:
+        st.session_state["sheets"] = {}
+    st.session_state["sheets"][sheet_name] = normalize_columns(recalc_start_end(df), add_missing=True)
+    st.session_state["last_autosave_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def build_backup_workbook_bytes():
+    """Create a backup workbook from the current session sheets."""
+    sheets = st.session_state.get("sheets", {})
+    return dataframe_to_xlsx(sheets)
+
+
+def restore_backup_file(uploaded_backup):
+    """Restore workbook sheets from a user-uploaded backup XLSX/CSV."""
+    restored = load_file(uploaded_backup)
+    st.session_state["sheets"] = restored
+    st.session_state["last_autosave_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return restored
 
 
 def load_file(uploaded_file):
@@ -1262,6 +1291,7 @@ def build_all_visuals_for_export(df, dark=True):
 
 st.title("Spectrum Planner")
 st.caption("Presentation-safe version: no dashboard, Active filtering enforced, matching legend colors, horizontal frequency labels, Smart Planner in Controls.")
+st.warning("Important: Download a backup workbook before logging out. Session-only changes can be lost if the app closes or reloads.")
 
 with st.sidebar:
     st.header("Controls")
@@ -1270,6 +1300,36 @@ with st.sidebar:
     dark = st.checkbox("Dark visuals", value=True)
     st.divider()
     st.caption("Inactive rows are excluded from visuals, conflicts, maps, and planner unless Show inactive is enabled.")
+
+    st.divider()
+    st.header("Backup / Restore")
+    st.warning("Download a backup before logging out. Streamlit sessions can clear when you leave the app.")
+
+    if st.session_state.get("sheets"):
+        backup_bytes = build_backup_workbook_bytes()
+        st.download_button(
+            "Download Backup Workbook",
+            data=backup_bytes,
+            file_name=f"spectrum_planner_backup_{timestamp_string()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="sidebar_backup_download",
+        )
+
+    restore_file = st.file_uploader(
+        "Restore from backup",
+        type=["xlsx", "csv"],
+        key="restore_backup_file",
+    )
+
+    if restore_file is not None:
+        restore_backup_file(restore_file)
+        st.success("Backup restored.")
+        st.rerun()
+
+    if "last_autosave_time" in st.session_state:
+        st.caption(f"Last session save: {st.session_state['last_autosave_time']}")
+
 
 if "sheets" not in st.session_state:
     st.session_state["sheets"] = {}
@@ -1305,24 +1365,41 @@ edited_df = st.data_editor(
 edited_df = normalize_columns(edited_df, add_missing=True)
 edited_df = recalc_start_end(edited_df)
 
+# V8 safety: keep the edited sheet synchronized in session on every rerun.
+# This prevents tab changes/reruns from losing edits during the same login session.
+update_active_sheet_in_session(active_sheet, edited_df)
+
 c1, c2, c3 = st.columns([1, 1, 1])
 
 with c1:
     if st.button("💾 Save shared changes", type="primary", use_container_width=True):
-        st.session_state["sheets"][active_sheet] = edited_df
-        st.success("Saved changes in this session.")
+        update_active_sheet_in_session(active_sheet, edited_df)
+        st.success("Saved changes in this session. Download a backup before logging out.")
 
 with c2:
     xlsx_bytes = dataframe_to_xlsx(st.session_state["sheets"])
     st.download_button(
         "Download workbook XLSX",
         data=xlsx_bytes,
-        file_name="spectrum_planner_workbook.xlsx",
+        file_name=f"spectrum_planner_workbook_{timestamp_string()}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
 
 with c3:
+    checkpoint_bytes = build_backup_workbook_bytes()
+    st.download_button(
+        "Save version checkpoint",
+        data=checkpoint_bytes,
+        file_name=f"spectrum_planner_checkpoint_{timestamp_string()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key="main_checkpoint_download",
+    )
+
+c4 = st.container()
+
+with c4:
     if st.button("Recalculate Start/End Frequency", use_container_width=True):
         st.session_state["sheets"][active_sheet] = recalc_start_end(edited_df)
         st.success("Recalculated Start/End Frequency from Center Frequency and Bandwidth.")
