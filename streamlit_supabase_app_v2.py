@@ -6819,8 +6819,7 @@ if is_admin:
             with c2:
                 new_password = st.text_input("Temporary password", type="password")
                 new_role = st.selectbox("Role", ["viewer", "editor", "admin"], index=0)
-            submitted_create_user = st.form_submit_b
-utton("Create user", type="primary")
+            submitted_create_user = st.form_submit_button("Create user", type="primary")
 
         if submitted_create_user:
             try:
