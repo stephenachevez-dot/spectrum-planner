@@ -1,4 +1,5 @@
 import streamlit as st
+# - V5: Horizontal frequency labels + lower-power systems drawn in front.
 import io
 import re
 import hashlib
@@ -8,6 +9,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+
 
 # ============================================================
 # Spectrum Planner — Presentation Safe Full App
@@ -282,6 +284,37 @@ def stable_color(label: str) -> str:
     return PALETTE[int(digest[:8], 16) % len(PALETTE)]
 
 
+
+def sort_for_visual_front(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Draw high-power/wide allocations first and lower-power/narrow allocations last.
+    Last drawn items appear in front in matplotlib.
+    """
+    out = df.copy()
+
+    power_col = find_col(out, ["Power (W)", "PowerW", "Power"])
+    bw_col = find_col(out, ["Bandwidth (MHz)", "Bandwidth", "BW"])
+
+    if power_col is not None:
+        out["_PlotPower"] = out[power_col].apply(lambda v: to_float(v, 0.0))
+    else:
+        out["_PlotPower"] = 0.0
+
+    if bw_col is not None:
+        out["_PlotBandwidth"] = out[bw_col].apply(lambda v: to_float(v, 0.0))
+    else:
+        out["_PlotBandwidth"] = 0.0
+
+    # Ascending=False draws highest first. Lower power gets drawn last/on top.
+    out = out.sort_values(
+        by=["_PlotPower", "_PlotBandwidth"],
+        ascending=[False, False],
+        kind="mergesort",
+    ).drop(columns=["_PlotPower", "_PlotBandwidth"], errors="ignore")
+
+    return out
+
+
 def build_color_map(df: pd.DataFrame, color_by: str) -> dict:
     if color_by is None or color_by not in df.columns:
         return {}
@@ -359,6 +392,7 @@ def add_legend(ax, color_by, color_map, dark=True):
 
 def time_frequency_chart(df: pd.DataFrame, color_by="Tech", dark=True, title=None):
     plot_df = active_only(df, show_inactive=st.session_state.get("show_inactive_rows", False))
+    plot_df = sort_for_visual_front(plot_df)
     color_by = color_by if color_by in plot_df.columns else pick_color_field(plot_df, color_by)
     color_map = build_color_map(plot_df, color_by)
 
@@ -411,12 +445,13 @@ def time_frequency_chart(df: pd.DataFrame, color_by="Tech", dark=True, title=Non
             center,
             start_time + (end_time - start_time) / 2.0,
             f"{center:.3f} MHz",
-            rotation=90,
+            rotation=0,
             ha="center",
             va="center",
-            fontsize=8,
+            fontsize=7,
             fontweight="bold",
             color="white",
+            bbox=dict(boxstyle="round,pad=0.15", facecolor="#111827", edgecolor="none", alpha=0.55),
             clip_on=True,
         )
 
@@ -437,6 +472,7 @@ def time_frequency_chart(df: pd.DataFrame, color_by="Tech", dark=True, title=Non
 
 def power_chart(df: pd.DataFrame, color_by="Tech", dark=True):
     plot_df = active_only(df, show_inactive=st.session_state.get("show_inactive_rows", False))
+    plot_df = sort_for_visual_front(plot_df)
     color_by = color_by if color_by in plot_df.columns else pick_color_field(plot_df, color_by)
     color_map = build_color_map(plot_df, color_by)
 
@@ -479,12 +515,13 @@ def power_chart(df: pd.DataFrame, color_by="Tech", dark=True):
             center,
             power / 2.0,
             f"{center:.3f} MHz",
-            rotation=90,
+            rotation=0,
             ha="center",
             va="center",
-            fontsize=8,
+            fontsize=7,
             fontweight="bold",
             color="white",
+            bbox=dict(boxstyle="round,pad=0.15", facecolor="#111827", edgecolor="none", alpha=0.55),
             clip_on=True,
         )
 
@@ -1244,13 +1281,13 @@ with tabs[0]:
     color_by = st.selectbox("Color boxes by", ["Tech", "Equipment", "Unit", "Sponsor"], index=0, key="tf_color")
     fig, plotted, rows_drawn = time_frequency_chart(edited_df, color_by=color_by, dark=dark)
     st.pyplot(fig, use_container_width=True)
-    st.caption(f"Showing {len(plotted)} active row(s). Frequency labels are vertical.")
+    st.caption(f"Showing {len(plotted)} active row(s). Frequency labels are horizontal. Lower-power systems are drawn in front.")
 
 with tabs[1]:
     color_by = st.selectbox("Color boxes by", ["Tech", "Equipment", "Unit", "Sponsor"], index=0, key="power_color")
     fig, plotted = power_chart(edited_df, color_by=color_by, dark=dark)
     st.pyplot(fig, use_container_width=True)
-    st.caption(f"Showing {len(plotted)} active row(s). Legend colors match box colors.")
+    st.caption(f"Showing {len(plotted)} active row(s). Legend colors match box colors. Lower-power systems are drawn in front.")
 
 with tabs[2]:
     fig, plotted, _ = time_frequency_chart(edited_df, color_by="Equipment", dark=dark, title="Time × Frequency — by Equipment")
