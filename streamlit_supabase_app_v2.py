@@ -22,11 +22,6 @@ from matplotlib.backends.backend_pdf import PdfPages
 # - Start/End Frequency automatically calculate from Center Frequency and Bandwidth.
 # - Locked rows are protected from automatic frequency moves.
 # ============================================================
-
-
-st.set_page_config(page_title="Spectrum Planner", layout="wide")
-
-
 APP_COLUMNS = [
     "Active",
     "Locked",
