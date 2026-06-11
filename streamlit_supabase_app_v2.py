@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import math
@@ -920,41 +921,37 @@ sb_admin = get_supabase_admin()
 APP_COLUMNS = [
     "Active",
     "Locked",
-    "Start Time", "End Time", "Unit", "Sponsor","Equipment", "Tech",
-    "Start Frequency (MHz)", "Center Frequency (MHz)", "End Frequency (MHz)",
-    "Bandwidth (MHz)","Power (W)", "Power (dBm)", "Tech Category", "Latitude", 
-    "Longitude", "Location", "System/Platform", "Antenna Height", 
-    "Coverage Radius", "Site Name",  "MGRS", "USNG", "Notes",
+    "Start Time", "End Time", "Equipment", "Center Frequency (MHz)",
+    "Start Frequency (MHz)", "End Frequency (MHz)", "Bandwidth (MHz)",
+    "Power (W)", "Power (dBm)", "Tech", "Unit", "Notes",
+    "Latitude", "Longitude", "Location",
+    "Antenna Height", "Coverage Radius", "Site Name",
+    "MGRS", "USNG",
 ]
 
-    
 STANDARD_RENAME = {
-    "Enabled": "Active",
-    "In Use": "Active",
-    "Use": "Active",
-    "Include": "Active",
-    
     "StartTime": "Start Time",
     "EndTime": "End Time",
     "Start Time": "Start Time",
     "End Time": "End Time",
 
-    "Unit": "Unit",
-    "Sponsor": "Sponsor",
     "Equipment": "Equipment",
+    "Equip": "Equipment",
     "Tech": "Tech",
-
-    "StartF": "Start Frequency (MHz)",
-    "Start Frequency": "Start Frequency (MHz)",
-    "Start Frequency (MHz)": "Start Frequency (MHz)",
-    "Start Freq": "Start Frequency (MHz)",
-    "Start Freq (MHz)": "Start Frequency (MHz)",
+    "Unit": "Unit",
+    "Notes": "Notes",
 
     "CenterF": "Center Frequency (MHz)",
     "Center Frequency": "Center Frequency (MHz)",
     "Center Frequency (MHz)": "Center Frequency (MHz)",
     "Center Freq": "Center Frequency (MHz)",
     "Center Freq (MHz)": "Center Frequency (MHz)",
+
+    "StartF": "Start Frequency (MHz)",
+    "Start Frequency": "Start Frequency (MHz)",
+    "Start Frequency (MHz)": "Start Frequency (MHz)",
+    "Start Freq": "Start Frequency (MHz)",
+    "Start Freq (MHz)": "Start Frequency (MHz)",
 
     "EndF": "End Frequency (MHz)",
     "End Frequency": "End Frequency (MHz)",
@@ -1004,23 +1001,26 @@ STANDARD_RENAME = {
     "USNG": "USNG",
     "Grid": "MGRS",
     "Military Grid": "MGRS",
-
-
+    "Active": "Active",
+    "Enabled": "Active",
+    "In Use": "Active",
+    "Use": "Active",
+    "Include": "Active",
 }
 
 INTERNAL_RENAME = {
-    "Active": "Active",
     "Start Time": "StartTime",
     "End Time": "EndTime",
     "Equipment": "Equipment",
-    "Start Frequency (MHz)": "StartF",
     "Center Frequency (MHz)": "CenterF",
+    "Start Frequency (MHz)": "StartF",
     "End Frequency (MHz)": "EndF",
     "Bandwidth (MHz)": "BW",
     "Power (W)": "PowerW",
     "Power (dBm)": "PowerdBm",
     "Tech": "Tech",
     "Unit": "Unit",
+    "Notes": "Notes",
     "Latitude": "Latitude",
     "Longitude": "Longitude",
     "Location": "Location",
@@ -1029,8 +1029,7 @@ INTERNAL_RENAME = {
     "Site Name": "SiteName",
     "MGRS": "MGRS",
     "USNG": "USNG",
-    "Notes": "Notes",
-    
+    "Active": "Active",
 }
 
 def now_iso():
@@ -4609,6 +4608,488 @@ def v491_export_plan(master, needs):
 
 
 
+
+
+# ---------------- V50 FULL FIX: Column Order + Active Filter + Legend Colors + Frequency Formulas ----------------
+
+APP_COLUMNS = [
+    "Active",
+    "Locked",
+    "Start Time",
+    "End Time",
+    "Unit",
+    "Sponsor",
+    "Equipment",
+    "Tech",
+    "Start Frequency (MHz)",
+    "Center Frequency (MHz)",
+    "End Frequency (MHz)",
+    "Bandwidth (MHz)",
+    "Power (W)",
+    "Power (dBm)",
+    "Tech Category",
+    "Latitude",
+    "Longitude",
+    "Location",
+    "System/Platform",
+    "Antenna Height",
+    "Coverage Radius",
+    "Site Name",
+    "MGRS",
+    "USNG",
+    "Notes",
+]
+
+STANDARD_RENAME = {
+    "Enabled": "Active",
+    "In Use": "Active",
+    "Use": "Active",
+    "Include": "Active",
+    "Active": "Active",
+    "Lock": "Locked",
+    "Locked": "Locked",
+    "Lock Frequency": "Locked",
+    "Lock Both": "Locked",
+    "StartTime": "Start Time",
+    "Start Time": "Start Time",
+    "Start": "Start Time",
+    "EndTime": "End Time",
+    "End Time": "End Time",
+    "End": "End Time",
+    "Unit": "Unit",
+    "Sponsor": "Sponsor",
+    "Sponser": "Sponsor",
+    "Equipment": "Equipment",
+    "System": "Equipment",
+    "Device": "Equipment",
+    "Radio": "Equipment",
+    "Tech": "Tech",
+    "Technology": "Tech",
+    "StartF": "Start Frequency (MHz)",
+    "Start Frequency": "Start Frequency (MHz)",
+    "Start Frequency (MHz)": "Start Frequency (MHz)",
+    "Start Freq": "Start Frequency (MHz)",
+    "Start Freq (MHz)": "Start Frequency (MHz)",
+    "CenterF": "Center Frequency (MHz)",
+    "Center Frequency": "Center Frequency (MHz)",
+    "Center Frequency (MHz)": "Center Frequency (MHz)",
+    "Center Freq": "Center Frequency (MHz)",
+    "Center Freq (MHz)": "Center Frequency (MHz)",
+    "EndF": "End Frequency (MHz)",
+    "End Frequency": "End Frequency (MHz)",
+    "End Frequency (MHz)": "End Frequency (MHz)",
+    "End Freq": "End Frequency (MHz)",
+    "End Freq (MHz)": "End Frequency (MHz)",
+    "BW": "Bandwidth (MHz)",
+    "Bandwidth": "Bandwidth (MHz)",
+    "Bandwidth (MHz)": "Bandwidth (MHz)",
+    "PowerW": "Power (W)",
+    "Power (W)": "Power (W)",
+    "PowerDbm": "Power (dBm)",
+    "Power (dBm)": "Power (dBm)",
+    "Tech Category": "Tech Category",
+    "Category": "Tech Category",
+    "Latitude": "Latitude",
+    "Lat": "Latitude",
+    "LAT": "Latitude",
+    "latitude": "Latitude",
+    "Longitude": "Longitude",
+    "Long": "Longitude",
+    "Lon": "Longitude",
+    "Lng": "Longitude",
+    "LON": "Longitude",
+    "longitude": "Longitude",
+    "Location": "Location",
+    "location": "Location",
+    "System/Platform": "System/Platform",
+    "System Platform": "System/Platform",
+    "Platform": "System/Platform",
+    "Antenna Height": "Antenna Height",
+    "AntennaHeight": "Antenna Height",
+    "Antenna Height (ft)": "Antenna Height",
+    "Antenna Height (m)": "Antenna Height",
+    "Coverage Radius": "Coverage Radius",
+    "CoverageRadius": "Coverage Radius",
+    "Coverage Radius (mi)": "Coverage Radius",
+    "Coverage Radius (km)": "Coverage Radius",
+    "Coverage Radius (NM)": "Coverage Radius",
+    "Site Name": "Site Name",
+    "SiteName": "Site Name",
+    "Site": "Site Name",
+    "MGRS": "MGRS",
+    "USNG": "USNG",
+    "Grid": "MGRS",
+    "Military Grid": "MGRS",
+    "Notes": "Notes",
+    "Note": "Notes",
+    "Comments": "Notes",
+}
+
+INTERNAL_RENAME = {
+    "Active": "Active",
+    "Locked": "Locked",
+    "Start Time": "StartTime",
+    "End Time": "EndTime",
+    "Equipment": "Equipment",
+    "Start Frequency (MHz)": "StartF",
+    "Center Frequency (MHz)": "CenterF",
+    "End Frequency (MHz)": "EndF",
+    "Bandwidth (MHz)": "BW",
+    "Power (W)": "PowerW",
+    "Power (dBm)": "PowerDbm",
+    "Tech": "Tech",
+    "Unit": "Unit",
+    "Sponsor": "Sponsor",
+    "Latitude": "Latitude",
+    "Longitude": "Longitude",
+    "Location": "Location",
+    "Antenna Height": "AntennaHeight",
+    "Coverage Radius": "CoverageRadius",
+    "Site Name": "SiteName",
+    "MGRS": "MGRS",
+    "USNG": "USNG",
+    "Notes": "Notes",
+}
+
+V50_VISUAL_PALETTE = [
+    "#2563EB", "#F97316", "#22C55E", "#EAB308", "#A855F7",
+    "#EF4444", "#06B6D4", "#84CC16", "#EC4899", "#8B5CF6",
+    "#14B8A6", "#F59E0B", "#0EA5E9", "#F43F5E", "#64748B",
+    "#6366F1", "#15803D", "#C2410C", "#A16207", "#7C3AED",
+]
+
+def v50_clean_key(value):
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+def v50_bool(value, default=True):
+    try:
+        if pd.isna(value):
+            return default
+    except Exception:
+        pass
+    s = str(value).strip().lower()
+    if s in ["true", "yes", "y", "1", "on", "active", "checked", "x"]:
+        return True
+    if s in ["false", "no", "n", "0", "off", "inactive", "unchecked", "", "none"]:
+        return False
+    return default
+
+def v50_float(value, default=None):
+    try:
+        if value is None or pd.isna(value):
+            return default
+    except Exception:
+        pass
+    try:
+        m = re.search(r"-?\d+(?:\.\d+)?", str(value).replace(",", ""))
+        return float(m.group(0)) if m else default
+    except Exception:
+        return default
+
+def v50_find_col(df, names):
+    if df is None or not hasattr(df, "columns"):
+        return None
+    lookup = {v50_clean_key(c): c for c in df.columns}
+    for name in names:
+        k = v50_clean_key(name)
+        if k in lookup:
+            return lookup[k]
+    for name in names:
+        k = v50_clean_key(name)
+        for lk, col in lookup.items():
+            if k and (k in lk or lk in k):
+                return col
+    return None
+
+def v50_rename_columns(df):
+    if df is None or not hasattr(df, "copy"):
+        return df
+    out = df.copy()
+    lookup = {v50_clean_key(k): v for k, v in STANDARD_RENAME.items()}
+    rename_map = {}
+    for col in out.columns:
+        k = v50_clean_key(col)
+        if k in lookup:
+            rename_map[col] = lookup[k]
+    if rename_map:
+        out = out.rename(columns=rename_map)
+    return out
+
+def v50_order_columns(df, add_missing=False):
+    if df is None or not hasattr(df, "copy"):
+        return df
+    out = v50_rename_columns(df)
+    if add_missing:
+        for col in APP_COLUMNS:
+            if col not in out.columns:
+                if col == "Active":
+                    out[col] = True
+                elif col == "Locked":
+                    out[col] = False
+                else:
+                    out[col] = None
+    ordered = [c for c in APP_COLUMNS if c in out.columns]
+    extras = [c for c in out.columns if c not in ordered]
+    return out[ordered + extras]
+
+def v50_recalc_start_end(df, original_df=None, only_changed=False):
+    if df is None or not hasattr(df, "copy"):
+        return df
+    out = v50_order_columns(df, add_missing=False)
+    center_col = v50_find_col(out, ["Center Frequency (MHz)", "Center Frequency", "CenterF", "Frequency"])
+    bw_col = v50_find_col(out, ["Bandwidth (MHz)", "Bandwidth", "BW"])
+    start_col = v50_find_col(out, ["Start Frequency (MHz)", "Start Frequency", "StartF"])
+    end_col = v50_find_col(out, ["End Frequency (MHz)", "End Frequency", "EndF"])
+    if center_col is None or bw_col is None:
+        return out
+    if start_col is None:
+        out["Start Frequency (MHz)"] = None
+        start_col = "Start Frequency (MHz)"
+    if end_col is None:
+        out["End Frequency (MHz)"] = None
+        end_col = "End Frequency (MHz)"
+    for idx in out.index:
+        try:
+            row = out.loc[idx]
+            if "Locked" in out.columns and v50_bool(row.get("Locked"), False):
+                continue
+            center = v50_float(row.get(center_col), None)
+            bw = v50_float(row.get(bw_col), None)
+            if center is None or bw is None or bw <= 0:
+                continue
+            if only_changed and original_df is not None and idx in original_df.index:
+                if center_col in original_df.columns and bw_col in original_df.columns:
+                    old_center = v50_float(original_df.loc[idx].get(center_col), None)
+                    old_bw = v50_float(original_df.loc[idx].get(bw_col), None)
+                    if old_center is not None and old_bw is not None:
+                        if abs(center - old_center) < 1e-9 and abs(bw - old_bw) < 1e-9:
+                            continue
+            out.at[idx, start_col] = round(center - bw / 2.0, 6)
+            out.at[idx, end_col] = round(center + bw / 2.0, 6)
+        except Exception:
+            continue
+    return v50_order_columns(out, add_missing=False)
+
+def v50_filter_active(df, show_inactive=False):
+    if df is None or not hasattr(df, "copy"):
+        return df
+    out = v50_order_columns(df, add_missing=False)
+    active_col = v50_find_col(out, ["Active"])
+    if active_col is None:
+        return out
+    out[active_col] = out[active_col].apply(lambda x: v50_bool(x, True))
+    if not show_inactive:
+        out = out[out[active_col] == True].copy()
+    return out.reset_index(drop=True)
+
+def v50_show_inactive():
+    for k in ["show_inactive_rows", "show_inactive", "show_inactive_frequencies", "include_inactive", "include_inactive_rows"]:
+        try:
+            if k in st.session_state:
+                return bool(st.session_state[k])
+        except Exception:
+            pass
+    return False
+
+def v50_color_label(value):
+    s = str(value or "").strip()
+    if not s or s.lower() in ["nan", "none", "blank", "(blank)"]:
+        return "(blank)"
+    return s
+
+def v50_color_field(df, preferred="Tech"):
+    if df is None or not hasattr(df, "columns"):
+        return None
+    for col in [preferred, "Tech", "Unit", "Sponsor", "Equipment", "Tech Category", "Location", "NTC Area"]:
+        if col in df.columns:
+            return col
+    return df.columns[0] if len(df.columns) else None
+
+def v50_color_map(df, color_by="Tech"):
+    if df is None or color_by is None or color_by not in df.columns:
+        return {}
+    labels = []
+    for value in df[color_by].fillna("(blank)").astype(str).tolist():
+        label = v50_color_label(value)
+        if label not in labels:
+            labels.append(label)
+    return {label: V50_VISUAL_PALETTE[i % len(V50_VISUAL_PALETTE)] for i, label in enumerate(labels)}
+
+def v50_row_color(row, color_by, color_map):
+    try:
+        label = v50_color_label(row.get(color_by, "(blank)"))
+    except Exception:
+        label = "(blank)"
+    return color_map.get(label, "#64748B")
+
+def v50_apply_plot_prep(df, preferred_color="Tech"):
+    plot_df = v50_filter_active(df, show_inactive=v50_show_inactive())
+    plot_df = v50_recalc_start_end(plot_df, only_changed=False)
+    plot_df = v50_order_columns(plot_df, add_missing=False)
+    color_by = v50_color_field(plot_df, preferred=preferred_color)
+    cmap = v50_color_map(plot_df, color_by)
+    return plot_df, color_by, cmap
+
+def v50_draw_legend(ax, color_by, cmap):
+    if not cmap:
+        return
+    try:
+        import matplotlib.pyplot as plt
+        handles = [
+            plt.Line2D([0], [0], marker="s", linestyle="", markerfacecolor=color,
+                       markeredgecolor=color, markersize=10, label=label)
+            for label, color in cmap.items()
+        ]
+        leg = ax.legend(handles=handles, title=color_by, loc="center left",
+                        bbox_to_anchor=(1.01, 0.5), frameon=True)
+        leg.get_frame().set_facecolor("#111827")
+        leg.get_frame().set_edgecolor("#CBD5E1")
+        plt.setp(leg.get_texts(), color="white", fontsize=8)
+        plt.setp(leg.get_title(), color="white", fontsize=9, fontweight="bold")
+    except Exception:
+        pass
+
+def v50_prepare_for_editor(df):
+    return v50_order_columns(v50_recalc_start_end(df, only_changed=False), add_missing=True)
+
+def v50_prepare_for_save(df, original_df=None):
+    return v50_order_columns(v50_recalc_start_end(df, original_df=original_df, only_changed=False), add_missing=True)
+
+# Backward compatible aliases for earlier patch names.
+filter_active_rows_v495 = v50_filter_active
+get_show_inactive_v495 = v50_show_inactive
+recalc_all_start_end_v497 = lambda df: v50_recalc_start_end(df, only_changed=False)
+recalc_start_end_from_center_bandwidth_v497 = v50_recalc_start_end
+apply_shared_visual_colors_v496 = lambda df, preferred="Tech": (v50_color_field(df, preferred), v50_color_map(df, v50_color_field(df, preferred)))
+row_visual_color_v496 = v50_row_color
+draw_shared_legend_v496 = v50_draw_legend
+
+
+# ---------------- V49.7 Auto Start/End Frequency Calculation ----------------
+
+def freqcalc_float_v497(value, default=None):
+    try:
+        if value is None or pd.isna(value):
+            return default
+    except Exception:
+        pass
+    try:
+        m = re.search(r"-?\d+(?:\.\d+)?", str(value).replace(",", ""))
+        return float(m.group(0)) if m else default
+    except Exception:
+        return default
+
+
+def freqcalc_bool_v497(value, default=False):
+    try:
+        if pd.isna(value):
+            return default
+    except Exception:
+        pass
+    s = str(value).strip().lower()
+    if s in ["true", "yes", "y", "1", "on", "locked", "active", "checked", "x"]:
+        return True
+    if s in ["false", "no", "n", "0", "off", "unlocked", "inactive", "unchecked", "", "none"]:
+        return False
+    return default
+
+
+def freqcalc_find_col_v497(df, names):
+    if df is None or not hasattr(df, "columns"):
+        return None
+    lookup = {re.sub(r"[^a-z0-9]+", "", str(c).lower()): c for c in df.columns}
+    for name in names:
+        key = re.sub(r"[^a-z0-9]+", "", str(name).lower())
+        if key in lookup:
+            return lookup[key]
+    for name in names:
+        key = re.sub(r"[^a-z0-9]+", "", str(name).lower())
+        for found_key, col in lookup.items():
+            if key and (key in found_key or found_key in key):
+                return col
+    return None
+
+
+def freqcalc_row_locked_v497(row):
+    for lock_col in ["Locked", "Lock Frequency", "Lock Both"]:
+        if lock_col in row.index and freqcalc_bool_v497(row.get(lock_col), False):
+            return True
+    return False
+
+
+def recalc_start_end_from_center_bandwidth_v497(df, original_df=None, only_changed=True):
+    """
+    Formula:
+      Start Frequency = Center Frequency - Bandwidth / 2
+      End Frequency   = Center Frequency + Bandwidth / 2
+
+    Locked / Lock Frequency / Lock Both rows are protected.
+    """
+    if df is None or not hasattr(df, "copy"):
+        return df
+
+    out = df.copy()
+
+    center_col = freqcalc_find_col_v497(out, [
+        "Center Frequency (MHz)", "Center Frequency", "CenterF", "Center MHz", "Frequency"
+    ])
+    start_col = freqcalc_find_col_v497(out, [
+        "Start Frequency (MHz)", "Start Frequency", "StartF", "Start MHz"
+    ])
+    end_col = freqcalc_find_col_v497(out, [
+        "End Frequency (MHz)", "End Frequency", "EndF", "End MHz"
+    ])
+    bw_col = freqcalc_find_col_v497(out, [
+        "Bandwidth (MHz)", "Bandwidth", "BW", "BW MHz"
+    ])
+
+    if center_col is None or bw_col is None:
+        return out
+
+    if start_col is None:
+        out["Start Frequency (MHz)"] = None
+        start_col = "Start Frequency (MHz)"
+
+    if end_col is None:
+        out["End Frequency (MHz)"] = None
+        end_col = "End Frequency (MHz)"
+
+    for idx in out.index:
+        try:
+            row = out.loc[idx]
+
+            if freqcalc_row_locked_v497(row):
+                continue
+
+            center = freqcalc_float_v497(row.get(center_col), None)
+            bw = freqcalc_float_v497(row.get(bw_col), None)
+
+            if center is None or bw is None or bw <= 0:
+                continue
+
+            if only_changed and original_df is not None and idx in original_df.index:
+                old_center = freqcalc_float_v497(original_df.loc[idx].get(center_col), None) if center_col in original_df.columns else None
+                old_bw = freqcalc_float_v497(original_df.loc[idx].get(bw_col), None) if bw_col in original_df.columns else None
+
+                center_changed = old_center is not None and abs(float(center) - float(old_center)) > 1e-9
+                bw_changed = old_bw is not None and abs(float(bw) - float(old_bw)) > 1e-9
+
+                if not center_changed and not bw_changed:
+                    continue
+
+            out.at[idx, start_col] = round(float(center) - float(bw) / 2.0, 6)
+            out.at[idx, end_col] = round(float(center) + float(bw) / 2.0, 6)
+
+        except Exception:
+            continue
+
+    return out
+
+
+def recalc_all_start_end_v497(df):
+    return recalc_start_end_from_center_bandwidth_v497(df, original_df=None, only_changed=False)
+
+
 # ---------------- V49.6 Shared Visual Color Map ----------------
 
 VISUAL_COLOR_PALETTE_V496 = [
@@ -6338,7 +6819,8 @@ if is_admin:
             with c2:
                 new_password = st.text_input("Temporary password", type="password")
                 new_role = st.selectbox("Role", ["viewer", "editor", "admin"], index=0)
-            submitted_create_user = st.form_submit_button("Create user", type="primary")
+            submitted_create_user = st.form_submit_b
+utton("Create user", type="primary")
 
         if submitted_create_user:
             try:
@@ -6593,6 +7075,102 @@ with st.expander("Row-level edit history", expanded=False):
 
 
 # ---------------- V49.4 Smart Frequency Deconflict Button ----------------
+
+# ---------------- V49.7 Frequency Range Recalculation UI ----------------
+
+# ---------------- V50 Column Order + Formula Utility ----------------
+with st.expander("Column Order / Frequency Formula Utility", expanded=False):
+    st.caption("Applies the screenshot column order and recalculates Start/End Frequency from Center Frequency and Bandwidth.")
+
+    if st.button("Fix active sheet column order + formulas", use_container_width=True, key="v50_fix_columns_formula"):
+        try:
+            source_v50 = active_sheet_df.copy() if "active_sheet_df" in locals() else current_df.copy()
+            fixed_v50 = v50_prepare_for_save(source_v50)
+            st.session_state["v50_pending_fixed_sheet"] = fixed_v50
+            st.success("Prepared fixed sheet with correct column order and frequency formulas.")
+            st.dataframe(fixed_v50.head(300), use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.error(f"Could not prepare fixed sheet: {type(e).__name__}: {str(e)}")
+            try:
+                st.code(traceback.format_exc())
+            except Exception:
+                pass
+
+    if "v50_pending_fixed_sheet" in st.session_state:
+        apply_v50 = st.checkbox("I reviewed the fixed sheet and want to save it", key="v50_apply_fixed_sheet_check")
+        if st.button("Save fixed active sheet", use_container_width=True, key="v50_apply_fixed_sheet"):
+            if not apply_v50:
+                st.warning("Check the review box before saving.")
+            else:
+                try:
+                    final_v50 = st.session_state["v50_pending_fixed_sheet"]
+                    if "project_id" in locals() and "logged_in_user" in locals():
+                        replace_project_rows(project_id, final_v50, logged_in_user)
+                        save_version(project_id, final_v50, logged_in_user, "V50 column order and formula fix")
+                        try:
+                            log_audit_event(project_id, "v50_column_order_formula_fix", logged_in_user, {"rows": len(final_v50)})
+                        except Exception:
+                            pass
+                        del st.session_state["v50_pending_fixed_sheet"]
+                        st.success("Fixed active sheet saved.")
+                        st.rerun()
+                    else:
+                        st.error("Project save context was not found. Changes were not applied.")
+                except Exception as e:
+                    st.error(f"Could not save fixed sheet: {type(e).__name__}: {str(e)}")
+                    try:
+                        st.code(traceback.format_exc())
+                    except Exception:
+                        pass
+
+
+with st.expander("Recalculate Start/End Frequency", expanded=False):
+    st.caption("Uses Start = Center - Bandwidth/2 and End = Center + Bandwidth/2. Locked rows are protected.")
+
+    if st.button("Recalculate Start/End Frequency for active sheet", use_container_width=True, key="v497_recalc_freq_ranges"):
+        try:
+            source_v497 = active_sheet_df.copy() if "active_sheet_df" in locals() else current_df.copy()
+            recalced_v497 = recalc_all_start_end_v497(source_v497)
+
+            st.session_state["v497_pending_recalc_df"] = recalced_v497
+            st.success("Start and End Frequency recalculated for unlocked rows.")
+            st.dataframe(recalced_v497.head(300), use_container_width=True, hide_index=True)
+
+        except Exception as e:
+            st.error(f"Could not recalculate frequency ranges: {type(e).__name__}: {str(e)}")
+            try:
+                st.code(traceback.format_exc())
+            except Exception:
+                pass
+
+    if "v497_pending_recalc_df" in st.session_state:
+        apply_recalc_v497 = st.checkbox("I reviewed the recalculated ranges and want to apply them", key="v497_apply_recalc_check")
+        if st.button("Apply recalculated Start/End Frequency", use_container_width=True, key="v497_apply_recalc"):
+            if not apply_recalc_v497:
+                st.warning("Check the review box before applying.")
+            else:
+                try:
+                    final_recalc_v497 = st.session_state["v497_pending_recalc_df"]
+                    if "project_id" in locals() and "logged_in_user" in locals():
+                        replace_project_rows(project_id, final_recalc_v497, logged_in_user)
+                        save_version(project_id, final_recalc_v497, logged_in_user, "Recalculated Start/End Frequency")
+                        try:
+                            log_audit_event(project_id, "recalculate_start_end_frequency", logged_in_user, {"rows": len(final_recalc_v497)})
+                        except Exception:
+                            pass
+                        del st.session_state["v497_pending_recalc_df"]
+                        st.success("Recalculated Start/End Frequency applied and saved.")
+                        st.rerun()
+                    else:
+                        st.error("Project save context was not found. Changes were not applied.")
+                except Exception as e:
+                    st.error(f"Could not apply recalculated frequency ranges: {type(e).__name__}: {str(e)}")
+                    try:
+                        st.code(traceback.format_exc())
+                    except Exception:
+                        pass
+
+
 with st.expander("Smart Frequency Deconflict", expanded=False):
     st.caption("Moves unlocked active rows to open frequency spots. Keeps Start Time / End Time unchanged.")
 
