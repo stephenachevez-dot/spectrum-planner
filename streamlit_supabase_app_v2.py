@@ -1,3 +1,28 @@
+import io
+import re
+import hashlib
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+
+
+# ============================================================
+# Spectrum Planner — Presentation Safe Full App
+# ============================================================
+# Purpose:
+# - No dashboard.
+# - Active unchecked rows DO NOT show in visuals, conflicts, maps, or planners.
+# - Legend colors and box colors always match.
+# - Frequency labels display vertically.
+# - Start/End Frequency automatically calculate from Center Frequency and Bandwidth.
+# - Locked rows are protected from automatic frequency moves.
+# ============================================================
+
+
 st.set_page_config(page_title="Spectrum Planner", layout="wide")
 
 
