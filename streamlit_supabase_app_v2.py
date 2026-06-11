@@ -29,6 +29,308 @@ from matplotlib.lines import Line2D
 from matplotlib.backends.backend_pdf import PdfPages
 from supabase import create_client
 
+
+# ---------------- V52 REAL VISUAL OVERRIDE ----------------
+
+V52_PALETTE = [
+    "#2563EB", "#F97316", "#22C55E", "#EAB308", "#A855F7",
+    "#EF4444", "#06B6D4", "#84CC16", "#EC4899", "#8B5CF6",
+    "#14B8A6", "#F59E0B", "#0EA5E9", "#F43F5E", "#64748B",
+    "#6366F1", "#15803D", "#C2410C", "#A16207", "#7C3AED",
+    "#0F766E", "#B45309", "#0369A1", "#BE185D", "#334155",
+]
+
+def v52_key(x):
+    return re.sub(r"[^a-z0-9]+", "", str(x or "").strip().lower())
+
+def v52_find_col(df, names):
+    if df is None or not hasattr(df, "columns"):
+        return None
+    lookup = {v52_key(c): c for c in df.columns}
+    for n in names:
+        k = v52_key(n)
+        if k in lookup:
+            return lookup[k]
+    for n in names:
+        k = v52_key(n)
+        for kk, col in lookup.items():
+            if k and (k in kk or kk in k):
+                return col
+    return None
+
+def v52_bool(x, default=True):
+    try:
+        if pd.isna(x):
+            return default
+    except Exception:
+        pass
+    if isinstance(x, bool):
+        return x
+    s = str(x).strip().lower()
+    if s in ["true","t","yes","y","1","on","active","checked","x"]:
+        return True
+    if s in ["false","f","no","n","0","off","inactive","unchecked","","none","nan"]:
+        return False
+    return default
+
+def v52_float(x, default=None):
+    try:
+        if x is None or pd.isna(x):
+            return default
+    except Exception:
+        pass
+    try:
+        m = re.search(r"-?\d+(?:\.\d+)?", str(x).replace(",", ""))
+        return float(m.group(0)) if m else default
+    except Exception:
+        return default
+
+def v52_show_inactive():
+    for k in ["show_inactive_rows","show_inactive","show_inactive_frequencies","include_inactive","include_inactive_rows"]:
+        try:
+            if k in st.session_state:
+                return bool(st.session_state[k])
+        except Exception:
+            pass
+    return False
+
+def v52_clean_operational_df(df, show_inactive=None):
+    if df is None or not hasattr(df, "copy"):
+        return df
+    if show_inactive is None:
+        show_inactive = v52_show_inactive()
+    out = df.copy()
+
+    active_col = v52_find_col(out, ["Active","Enabled","In Use","Use","Include"])
+    locked_col = v52_find_col(out, ["Locked","Lock","Lock Frequency","Lock Both"])
+
+    if active_col is not None and active_col != "Active":
+        out = out.rename(columns={active_col: "Active"})
+    if locked_col is not None and locked_col != "Locked":
+        out = out.rename(columns={locked_col: "Locked"})
+
+    if "Active" not in out.columns:
+        out["Active"] = True
+    if "Locked" not in out.columns:
+        out["Locked"] = False
+
+    out["Active"] = out["Active"].apply(lambda v: v52_bool(v, True))
+    out["Locked"] = out["Locked"].apply(lambda v: v52_bool(v, False))
+
+    if not show_inactive:
+        out = out[out["Active"] == True].copy()
+
+    center_col = v52_find_col(out, ["Center Frequency (MHz)","Center Frequency","CenterF","Frequency"])
+    bw_col = v52_find_col(out, ["Bandwidth (MHz)","Bandwidth","BW"])
+    start_col = v52_find_col(out, ["Start Frequency (MHz)","Start Frequency","StartF"])
+    end_col = v52_find_col(out, ["End Frequency (MHz)","End Frequency","EndF"])
+
+    if center_col is not None and bw_col is not None:
+        if start_col is None:
+            out["Start Frequency (MHz)"] = None
+            start_col = "Start Frequency (MHz)"
+        if end_col is None:
+            out["End Frequency (MHz)"] = None
+            end_col = "End Frequency (MHz)"
+        for idx, row in out.iterrows():
+            c = v52_float(row.get(center_col))
+            bw = v52_float(row.get(bw_col))
+            if c is not None and bw is not None and bw > 0:
+                out.at[idx, start_col] = round(c - bw / 2.0, 6)
+                out.at[idx, end_col] = round(c + bw / 2.0, 6)
+
+    return out.reset_index(drop=True)
+
+def v52_label(x):
+    s = str(x or "").strip()
+    if not s or s.lower() in ["nan","none","blank","(blank)"]:
+        return "(blank)"
+    return s
+
+def v52_color_field(df, preferred="Tech"):
+    if df is None or not hasattr(df, "columns"):
+        return None
+    for c in [preferred, "Tech", "Unit", "Sponsor", "Equipment", "Tech Category", "Location", "NTC Area"]:
+        if c in df.columns:
+            return c
+    return df.columns[0] if len(df.columns) else None
+
+def v52_color_for(label):
+    label = v52_label(label)
+    h = hashlib.md5(label.encode("utf-8")).hexdigest()
+    return V52_PALETTE[int(h[:8], 16) % len(V52_PALETTE)]
+
+def v52_color_map(df, color_by):
+    if df is None or color_by is None or color_by not in df.columns:
+        return {}
+    labels = []
+    for v in df[color_by].fillna("(blank)").astype(str).tolist():
+        lab = v52_label(v)
+        if lab not in labels:
+            labels.append(lab)
+    return {lab: v52_color_for(lab) for lab in labels}
+
+def v52_time_to_hours(x):
+    s = str(x or "").strip().lower()
+    if not s or s in ["none","nan"]:
+        return None
+    try:
+        if ":" in s:
+            hh, mm = s.split(":")[:2]
+            return float(hh) + float(mm)/60.0
+        m = re.search(r"\d+(?:\.\d+)?", s)
+        if not m:
+            return None
+        val = float(m.group(0))
+        if val >= 100:
+            return int(val // 100) + (val % 100) / 60.0
+        return val
+    except Exception:
+        return None
+
+def v52_add_legend(ax, color_by, cmap, dark=True):
+    if not cmap:
+        return
+    import matplotlib.pyplot as plt
+    handles = [
+        plt.Line2D([0],[0], marker="s", linestyle="", markerfacecolor=color,
+                   markeredgecolor=color, markersize=9, label=label)
+        for label, color in cmap.items()
+    ]
+    leg = ax.legend(handles=handles, title=color_by, loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=True)
+    leg.get_frame().set_facecolor("#111827" if dark else "white")
+    leg.get_frame().set_edgecolor("#CBD5E1")
+    plt.setp(leg.get_texts(), color="white" if dark else "black", fontsize=8)
+    plt.setp(leg.get_title(), color="white" if dark else "black", fontsize=9, fontweight="bold")
+
+def v52_time_frequency_figure(df, title="Time × Frequency", color_by="Tech", dark=True):
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    plot_df = v52_clean_operational_df(df)
+    color_by = color_by if color_by in plot_df.columns else v52_color_field(plot_df, color_by)
+    cmap = v52_color_map(plot_df, color_by)
+
+    center_col = v52_find_col(plot_df, ["Center Frequency (MHz)","Center Frequency","CenterF","Frequency"])
+    bw_col = v52_find_col(plot_df, ["Bandwidth (MHz)","Bandwidth","BW"])
+    st_col = v52_find_col(plot_df, ["Start Time","StartTime","Start"])
+    et_col = v52_find_col(plot_df, ["End Time","EndTime","End"])
+
+    fig, ax = plt.subplots(figsize=(16, 7))
+    fig.patch.set_facecolor("#111827" if dark else "white")
+    ax.set_facecolor("#111827" if dark else "white")
+
+    for _, row in plot_df.iterrows():
+        center = v52_float(row.get(center_col)) if center_col else None
+        bw = v52_float(row.get(bw_col), 1.0) if bw_col else 1.0
+        if center is None:
+            continue
+        if bw is None or bw <= 0:
+            bw = 1.0
+
+        y1 = v52_time_to_hours(row.get(st_col)) if st_col else None
+        y2 = v52_time_to_hours(row.get(et_col)) if et_col else None
+        if y1 is None:
+            y1 = 0.0
+        if y2 is None or y2 <= y1:
+            y2 = y1 + 2.0
+
+        label = v52_label(row.get(color_by, "(blank)")) if color_by else "(blank)"
+        color = cmap.get(label, v52_color_for(label))
+
+        ax.add_patch(Rectangle((center-bw/2.0, y1), bw, y2-y1, facecolor=color, edgecolor="#0F172A", linewidth=1.0, alpha=0.95))
+        ax.text(center, y1+(y2-y1)/2.0, f"{center:.3f} MHz", rotation=90, ha="center", va="center",
+                fontsize=8, fontweight="bold", color="white", clip_on=True)
+
+    ax.autoscale()
+    ax.set_title(title, color="white" if dark else "black", fontsize=15, fontweight="bold")
+    ax.set_xlabel("Frequency (MHz)", color="white" if dark else "black")
+    ax.set_ylabel("Time (hours)", color="white" if dark else "black")
+    ax.tick_params(colors="white" if dark else "black")
+    ax.grid(True, alpha=0.18)
+    v52_add_legend(ax, color_by, cmap, dark=dark)
+    fig.tight_layout()
+    return fig, plot_df
+
+def v52_power_figure(df, title="Frequency Allocation vs Power", color_by="Tech", dark=True):
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    plot_df = v52_clean_operational_df(df)
+    color_by = color_by if color_by in plot_df.columns else v52_color_field(plot_df, color_by)
+    cmap = v52_color_map(plot_df, color_by)
+
+    center_col = v52_find_col(plot_df, ["Center Frequency (MHz)","Center Frequency","CenterF","Frequency"])
+    bw_col = v52_find_col(plot_df, ["Bandwidth (MHz)","Bandwidth","BW"])
+    power_col = v52_find_col(plot_df, ["Power (W)","PowerW","Power"])
+
+    fig, ax = plt.subplots(figsize=(16, 7))
+    fig.patch.set_facecolor("#111827" if dark else "white")
+    ax.set_facecolor("#111827" if dark else "white")
+
+    for _, row in plot_df.iterrows():
+        center = v52_float(row.get(center_col)) if center_col else None
+        bw = v52_float(row.get(bw_col), 1.0) if bw_col else 1.0
+        power = v52_float(row.get(power_col), 1.0) if power_col else 1.0
+        if center is None:
+            continue
+        if bw is None or bw <= 0:
+            bw = 1.0
+        if power is None or power <= 0:
+            power = 1.0
+
+        label = v52_label(row.get(color_by, "(blank)")) if color_by else "(blank)"
+        color = cmap.get(label, v52_color_for(label))
+
+        ax.add_patch(Rectangle((center-bw/2.0, 0), bw, power, facecolor=color, edgecolor="#0F172A", linewidth=1.0, alpha=0.95))
+        ax.text(center, power/2.0, f"{center:.3f} MHz", rotation=90, ha="center", va="center",
+                fontsize=8, fontweight="bold", color="white", clip_on=True)
+
+    ax.autoscale()
+    ax.set_title(title, color="white" if dark else "black", fontsize=15, fontweight="bold")
+    ax.set_xlabel("Frequency (MHz)", color="white" if dark else "black")
+    ax.set_ylabel("Power (W)", color="white" if dark else "black")
+    ax.tick_params(colors="white" if dark else "black")
+    ax.grid(True, alpha=0.18)
+    v52_add_legend(ax, color_by, cmap, dark=dark)
+    fig.tight_layout()
+    return fig, plot_df
+
+# Override app renderers BEFORE Streamlit execution.
+def render_clean_time_frequency_chart(df, title="Time × Frequency", default_color_by="Tech", key_prefix="v52"):
+    fig, plot_df = v52_time_frequency_figure(df, title=title, color_by=default_color_by, dark=True)
+    st.pyplot(fig, use_container_width=True)
+    st.caption(f"Showing {len(plot_df)} active rows. Inactive rows are hidden unless Show inactive frequencies is enabled.")
+    return fig
+
+def render_time_frequency_chart(df, title="Time × Frequency", default_color_by="Tech", key_prefix="v52"):
+    return render_clean_time_frequency_chart(df, title=title, default_color_by=default_color_by, key_prefix=key_prefix)
+
+def render_power_chart(df, title="Frequency Allocation vs Power", default_color_by="Tech", key_prefix="v52"):
+    fig, plot_df = v52_power_figure(df, title=title, color_by=default_color_by, dark=True)
+    st.pyplot(fig, use_container_width=True)
+    st.caption(f"Showing {len(plot_df)} active rows. Inactive rows are hidden unless Show inactive frequencies is enabled.")
+    return fig
+
+def build_power_plot(df, color_by="Tech", dark=True, *args, **kwargs):
+    fig, _ = v52_power_figure(df, title="Frequency Allocation vs Power", color_by=color_by, dark=dark)
+    return fig
+
+def build_time_frequency_plot(df, color_by="Tech", dark=True, *args, **kwargs):
+    fig, _ = v52_time_frequency_figure(df, title="Time × Frequency", color_by=color_by, dark=dark)
+    return fig
+
+def build_deconflict_plot(df, color_by="Tech", dark=True, *args, **kwargs):
+    fig, _ = v52_time_frequency_figure(df, title=f"Time × Frequency — by {color_by}", color_by=color_by, dark=dark)
+    return fig
+
+# Compatibility aliases used by older code.
+filter_active_rows_v495 = v52_clean_operational_df
+get_show_inactive_v495 = v52_show_inactive
+v51_filter_active = v52_clean_operational_df
+v51_plot_df = lambda df, preferred_color="Tech": (v52_clean_operational_df(df), v52_color_field(v52_clean_operational_df(df), preferred_color), v52_color_map(v52_clean_operational_df(df), v52_color_field(v52_clean_operational_df(df), preferred_color)))
+
+
 st.set_page_config(page_title="Spectrum Planner", page_icon="📡", layout="wide", initial_sidebar_state="expanded")
 
 
@@ -6642,7 +6944,8 @@ def build_deconflict_plot(d0, grp_field, palette, dark, tick_major, tick_minor, 
                 label = ""
             if label:
                 ax.text(x0+w/2, y0+h/2, label, ha="center", va="center", fontsize=8, fontweight="bold", color=("white" if dark else "black"), clip_on=True)
-        if show_shift_label and "ShiftSec" in d.columns and row["BoxHeightMin"] >= float(min_label_height_min):
+        if show_shift_label and "ShiftSec" in d
+.columns and row["BoxHeightMin"] >= float(min_label_height_min):
             shift = row.get("ShiftSec", np.nan)
             if pd.notna(shift) and abs(shift) > 0:
                 ax.text(x0+w/2, min(y0+h-.2, y0+.2), f"Δ {round(shift/60):.0f}m", ha="center", va="center", fontsize=7, fontweight="bold", color=("white" if dark else "black"), clip_on=True)
@@ -6845,8 +7148,7 @@ if not project_id:
 
 current_project = next((p for p in projects if p["id"] == project_id), {})
 project_name = current_project.get("name", "Selected")
-if not user_has_project_access(project_id, current_user_id
-):
+if not user_has_project_access(project_id, current_user_id):
     st.error("You do not have access to this project. Ask an administrator to add you as a project member.")
     st.stop()
 
