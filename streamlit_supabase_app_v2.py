@@ -1,8 +1,3 @@
-import streamlit as st
-# - V8: Adds workbook backup/restore and safer autosave-to-session workflow.
-# - V7: Adds visual extraction/export buttons for PNG and all-visuals PDF.
-# - V6: Smart Planner moved from tab into sidebar controls.
-# - V5: Horizontal frequency labels + lower-power systems drawn in front.
 import io
 import re
 import hashlib
@@ -290,10 +285,15 @@ def stable_color(label: str) -> str:
 
 
 
+
 def sort_for_visual_front(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Draw high-power/wide allocations first and lower-power/narrow allocations last.
-    Last drawn items appear in front in matplotlib.
+    Presentation-safe visual draw order.
+
+    Goal:
+    - High-power / wide-band systems are drawn first as background.
+    - Lower-power / narrow-band systems are drawn later and appear in front.
+    - The data order itself is not changed for saving; this is only for visuals.
     """
     out = df.copy()
 
@@ -310,14 +310,55 @@ def sort_for_visual_front(df: pd.DataFrame) -> pd.DataFrame:
     else:
         out["_PlotBandwidth"] = 0.0
 
-    # Ascending=False draws highest first. Lower power gets drawn last/on top.
+    # Highest power and widest bandwidth first. Smaller/lower-power systems draw last/on top.
     out = out.sort_values(
         by=["_PlotPower", "_PlotBandwidth"],
         ascending=[False, False],
         kind="mergesort",
-    ).drop(columns=["_PlotPower", "_PlotBandwidth"], errors="ignore")
+    )
 
-    return out
+    return out.drop(columns=["_PlotPower", "_PlotBandwidth"], errors="ignore")
+
+
+def visual_zorder_and_alpha(power_value, max_power):
+    """
+    Better foreground control:
+    - High-power rows are background with more transparency.
+    - Lower-power rows are foreground with stronger visibility.
+    """
+    power = to_float(power_value, 0.0)
+    max_power = max(to_float(max_power, 1.0), 1.0)
+
+    # Ratio close to 1 = high power/background.
+    ratio = max(0.0, min(power / max_power, 1.0))
+
+    # High power should not hide smaller systems.
+    alpha = 0.42 + (1.0 - ratio) * 0.43
+    alpha = max(0.42, min(alpha, 0.88))
+
+    # Low power gets higher z-order.
+    zorder = 10 + int((1.0 - ratio) * 90)
+
+    return zorder, alpha
+
+
+def should_label_row(row, power_col, max_power, total_rows):
+    """
+    Prevent label clutter:
+    - Always label smaller/lower-power foreground rows.
+    - Label all rows when chart is small.
+    - For dense charts, suppress some high-power background labels.
+    """
+    if total_rows <= 60:
+        return True
+
+    power = to_float(row.get(power_col), 0.0) if power_col else 0.0
+    max_power = max(to_float(max_power, 1.0), 1.0)
+    ratio = power / max_power if max_power else 0.0
+
+    # Lower-power rows are the ones we need to see in front.
+    return ratio <= 0.65
+
 
 
 def build_color_map(df: pd.DataFrame, color_by: str) -> dict:
@@ -398,6 +439,7 @@ def add_legend(ax, color_by, color_map, dark=True):
 def time_frequency_chart(df: pd.DataFrame, color_by="Tech", dark=True, title=None):
     plot_df = active_only(df, show_inactive=st.session_state.get("show_inactive_rows", False))
     plot_df = sort_for_visual_front(plot_df)
+
     color_by = color_by if color_by in plot_df.columns else pick_color_field(plot_df, color_by)
     color_map = build_color_map(plot_df, color_by)
 
@@ -405,12 +447,18 @@ def time_frequency_chart(df: pd.DataFrame, color_by="Tech", dark=True, title=Non
     bw_col = find_col(plot_df, ["Bandwidth (MHz)", "Bandwidth", "BW"])
     start_time_col = find_col(plot_df, ["Start Time", "StartTime", "Start"])
     end_time_col = find_col(plot_df, ["End Time", "EndTime", "End"])
+    power_col = find_col(plot_df, ["Power (W)", "PowerW", "Power"])
+
+    max_power = 1.0
+    if power_col is not None and len(plot_df):
+        max_power = max([to_float(v, 0.0) for v in plot_df[power_col].tolist()] + [1.0])
 
     fig, ax = plt.subplots(figsize=(16, 7))
     fig.patch.set_facecolor("#111827" if dark else "white")
     ax.set_facecolor("#111827" if dark else "white")
 
     rows_drawn = 0
+    total_rows = len(plot_df)
 
     for _, row in plot_df.iterrows():
         center = to_float(row.get(center_col)) if center_col else None
@@ -434,6 +482,8 @@ def time_frequency_chart(df: pd.DataFrame, color_by="Tech", dark=True, title=Non
         group_label = label_value(row.get(color_by, "(blank)")) if color_by else "(blank)"
         color = color_map.get(group_label, stable_color(group_label))
 
+        zorder, alpha = visual_zorder_and_alpha(row.get(power_col) if power_col else 0.0, max_power)
+
         ax.add_patch(
             Rectangle(
                 (center - bw / 2.0, start_time),
@@ -441,24 +491,27 @@ def time_frequency_chart(df: pd.DataFrame, color_by="Tech", dark=True, title=Non
                 end_time - start_time,
                 facecolor=color,
                 edgecolor="#0F172A",
-                linewidth=1.0,
-                alpha=0.95,
+                linewidth=0.9,
+                alpha=alpha,
+                zorder=zorder,
             )
         )
 
-        ax.text(
-            center,
-            start_time + (end_time - start_time) / 2.0,
-            f"{center:.3f} MHz",
-            rotation=0,
-            ha="center",
-            va="center",
-            fontsize=7,
-            fontweight="bold",
-            color="white",
-            bbox=dict(boxstyle="round,pad=0.15", facecolor="#111827", edgecolor="none", alpha=0.55),
-            clip_on=True,
-        )
+        if should_label_row(row, power_col, max_power, total_rows):
+            ax.text(
+                center,
+                start_time + (end_time - start_time) / 2.0,
+                f"{center:.3f} MHz",
+                rotation=0,
+                ha="center",
+                va="center",
+                fontsize=7,
+                fontweight="bold",
+                color="white",
+                bbox=dict(boxstyle="round,pad=0.12", facecolor="#111827", edgecolor="none", alpha=0.55),
+                clip_on=True,
+                zorder=zorder + 1,
+            )
 
         rows_drawn += 1
 
@@ -467,7 +520,7 @@ def time_frequency_chart(df: pd.DataFrame, color_by="Tech", dark=True, title=Non
     ax.set_xlabel("Frequency (MHz)", color="white" if dark else "black")
     ax.set_ylabel("Time (hours)", color="white" if dark else "black")
     ax.tick_params(colors="white" if dark else "black")
-    ax.grid(True, alpha=0.18)
+    ax.grid(True, alpha=0.18, zorder=0)
 
     add_legend(ax, color_by, color_map, dark=dark)
     fig.tight_layout()
@@ -478,6 +531,7 @@ def time_frequency_chart(df: pd.DataFrame, color_by="Tech", dark=True, title=Non
 def power_chart(df: pd.DataFrame, color_by="Tech", dark=True):
     plot_df = active_only(df, show_inactive=st.session_state.get("show_inactive_rows", False))
     plot_df = sort_for_visual_front(plot_df)
+
     color_by = color_by if color_by in plot_df.columns else pick_color_field(plot_df, color_by)
     color_map = build_color_map(plot_df, color_by)
 
@@ -485,9 +539,15 @@ def power_chart(df: pd.DataFrame, color_by="Tech", dark=True):
     bw_col = find_col(plot_df, ["Bandwidth (MHz)", "Bandwidth", "BW"])
     power_col = find_col(plot_df, ["Power (W)", "PowerW", "Power"])
 
+    max_power = 1.0
+    if power_col is not None and len(plot_df):
+        max_power = max([to_float(v, 0.0) for v in plot_df[power_col].tolist()] + [1.0])
+
     fig, ax = plt.subplots(figsize=(16, 7))
     fig.patch.set_facecolor("#111827" if dark else "white")
     ax.set_facecolor("#111827" if dark else "white")
+
+    total_rows = len(plot_df)
 
     for _, row in plot_df.iterrows():
         center = to_float(row.get(center_col)) if center_col else None
@@ -504,6 +564,8 @@ def power_chart(df: pd.DataFrame, color_by="Tech", dark=True):
         group_label = label_value(row.get(color_by, "(blank)")) if color_by else "(blank)"
         color = color_map.get(group_label, stable_color(group_label))
 
+        zorder, alpha = visual_zorder_and_alpha(power, max_power)
+
         ax.add_patch(
             Rectangle(
                 (center - bw / 2.0, 0),
@@ -511,31 +573,34 @@ def power_chart(df: pd.DataFrame, color_by="Tech", dark=True):
                 power,
                 facecolor=color,
                 edgecolor="#0F172A",
-                linewidth=1.0,
-                alpha=0.95,
+                linewidth=0.9,
+                alpha=alpha,
+                zorder=zorder,
             )
         )
 
-        ax.text(
-            center,
-            power / 2.0,
-            f"{center:.3f} MHz",
-            rotation=0,
-            ha="center",
-            va="center",
-            fontsize=7,
-            fontweight="bold",
-            color="white",
-            bbox=dict(boxstyle="round,pad=0.15", facecolor="#111827", edgecolor="none", alpha=0.55),
-            clip_on=True,
-        )
+        if should_label_row(row, power_col, max_power, total_rows):
+            ax.text(
+                center,
+                power / 2.0,
+                f"{center:.3f} MHz",
+                rotation=0,
+                ha="center",
+                va="center",
+                fontsize=7,
+                fontweight="bold",
+                color="white",
+                bbox=dict(boxstyle="round,pad=0.12", facecolor="#111827", edgecolor="none", alpha=0.55),
+                clip_on=True,
+                zorder=zorder + 1,
+            )
 
     ax.autoscale()
     ax.set_title(f"Frequency Allocation vs Power — by {color_by}", color="white" if dark else "black", fontsize=15, fontweight="bold")
     ax.set_xlabel("Frequency (MHz)", color="white" if dark else "black")
     ax.set_ylabel("Power (W)", color="white" if dark else "black")
     ax.tick_params(colors="white" if dark else "black")
-    ax.grid(True, alpha=0.18)
+    ax.grid(True, alpha=0.18, zorder=0)
 
     add_legend(ax, color_by, color_map, dark=dark)
     fig.tight_layout()
@@ -1631,7 +1696,7 @@ with tabs[0]:
     color_by = st.selectbox("Color boxes by", ["Tech", "Equipment", "Unit", "Sponsor"], index=0, key="tf_color")
     fig, plotted, rows_drawn = time_frequency_chart(edited_df, color_by=color_by, dark=dark)
     st.pyplot(fig, use_container_width=True)
-    st.caption(f"Showing {len(plotted)} active row(s). Frequency labels are horizontal. Lower-power systems are drawn in front.")
+    st.caption(f"Showing {len(plotted)} active row(s). Frequency labels are horizontal. High-power systems are transparent in the background; lower-power systems are drawn in front.")
     visual_download_button(
         fig,
         "Download Time x Frequency PNG",
@@ -1643,7 +1708,7 @@ with tabs[1]:
     color_by = st.selectbox("Color boxes by", ["Tech", "Equipment", "Unit", "Sponsor"], index=0, key="power_color")
     fig, plotted = power_chart(edited_df, color_by=color_by, dark=dark)
     st.pyplot(fig, use_container_width=True)
-    st.caption(f"Showing {len(plotted)} active row(s). Legend colors match box colors. Lower-power systems are drawn in front.")
+    st.caption(f"Showing {len(plotted)} active row(s). Legend colors match box colors. High-power systems are transparent in the background; lower-power systems are drawn in front.")
     visual_download_button(
         fig,
         "Download Power View PNG",
