@@ -1,4 +1,5 @@
 import streamlit as st
+# - V6: Smart Planner moved from tab into sidebar controls.
 # - V5: Horizontal frequency labels + lower-power systems drawn in front.
 import io
 import re
@@ -1190,7 +1191,7 @@ def smart_full_deconflict(df: pd.DataFrame, day_start: float, day_end: float, ti
 # ============================================================
 
 st.title("Spectrum Planner")
-st.caption("Presentation-safe version: no dashboard, Active filtering enforced, matching legend colors, vertical frequency labels.")
+st.caption("Presentation-safe version: no dashboard, Active filtering enforced, matching legend colors, horizontal frequency labels, Smart Planner in Controls.")
 
 with st.sidebar:
     st.header("Controls")
@@ -1265,6 +1266,184 @@ m1.metric("Active rows in visuals", len(operational_df))
 m2.metric("Inactive rows hidden", int((normalize_columns(edited_df)["Active"] == False).sum()))
 m3.metric("Equipment conflicts", len(conflict_df))
 
+# ============================================================
+# Smart Planner moved into Controls
+# ============================================================
+
+with st.sidebar.expander("Smart Planner", expanded=False):
+    st.caption("Recommended: run time first, then frequency. Locked rows will not move. Inactive rows are ignored.")
+
+    planner_mode = st.radio(
+        "Planner mode",
+        [
+            "Auto deconflict by time",
+            "Auto deconflict by frequency",
+            "Run full smart deconfliction",
+        ],
+        key="sidebar_planner_mode",
+    )
+
+    st.markdown("**Time settings**")
+    day_start = st.number_input(
+        "Operating day start hour",
+        value=6.0,
+        min_value=0.0,
+        max_value=23.75,
+        step=0.5,
+        key="sidebar_day_start",
+    )
+    day_end = st.number_input(
+        "Operating day end hour",
+        value=20.0,
+        min_value=0.25,
+        max_value=24.0,
+        step=0.5,
+        key="sidebar_day_end",
+    )
+    time_step = st.number_input(
+        "Time step minutes",
+        value=30,
+        min_value=5,
+        max_value=120,
+        step=5,
+        key="sidebar_time_step",
+    )
+
+    st.markdown("**Frequency settings**")
+    low = st.number_input("Search low MHz", value=2200.0, step=1.0, key="sidebar_low_mhz")
+    high = st.number_input("Search high MHz", value=2300.0, step=1.0, key="sidebar_high_mhz")
+    freq_step = st.number_input(
+        "Frequency step MHz",
+        value=1.0,
+        min_value=0.001,
+        step=0.5,
+        key="sidebar_freq_step",
+    )
+    guard = st.number_input(
+        "Guard MHz",
+        value=0.0,
+        min_value=0.0,
+        step=0.1,
+        key="sidebar_guard_mhz",
+    )
+    max_passes = st.number_input(
+        "Max passes",
+        value=5,
+        min_value=1,
+        max_value=20,
+        step=1,
+        key="sidebar_max_passes",
+    )
+
+    if st.button("Run Smart Planner", type="primary", use_container_width=True):
+        if planner_mode == "Auto deconflict by time":
+            new_df, moves = smart_time_deconflict(
+                edited_df,
+                day_start=day_start,
+                day_end=day_end,
+                step_minutes=int(time_step),
+                guard_mhz=guard,
+                max_passes=int(max_passes),
+            )
+            summary = pd.DataFrame(
+                [
+                    {
+                        "Planner Mode": "Time Only",
+                        "Starting Conflicts": len(conflict_df),
+                        "Final Conflicts": len(detect_conflicts(new_df)),
+                        "Move Rows": len(moves),
+                    }
+                ]
+            )
+
+        elif planner_mode == "Auto deconflict by frequency":
+            new_df, moves = smart_frequency_deconflict(
+                edited_df,
+                low_mhz=low,
+                high_mhz=high,
+                step_mhz=freq_step,
+                guard_mhz=guard,
+                max_passes=int(max_passes),
+            )
+            summary = pd.DataFrame(
+                [
+                    {
+                        "Planner Mode": "Frequency Only",
+                        "Starting Conflicts": len(conflict_df),
+                        "Final Conflicts": len(detect_conflicts(new_df)),
+                        "Move Rows": len(moves),
+                    }
+                ]
+            )
+
+        else:
+            new_df, moves, summary = smart_full_deconflict(
+                edited_df,
+                day_start=day_start,
+                day_end=day_end,
+                time_step_minutes=int(time_step),
+                low_mhz=low,
+                high_mhz=high,
+                freq_step_mhz=freq_step,
+                guard_mhz=guard,
+                max_passes=int(max_passes),
+            )
+
+        st.session_state["pending_planner_df"] = new_df
+        st.session_state["pending_planner_moves"] = moves
+        st.session_state["pending_planner_summary"] = summary
+        st.session_state["planner_panel_open"] = True
+        st.success("Planner complete. Review results below the workbook.")
+
+
+
+
+if "pending_planner_summary" in st.session_state:
+    st.subheader("Smart Planner Results")
+
+    st.markdown("**Summary**")
+    st.dataframe(st.session_state["pending_planner_summary"], use_container_width=True, hide_index=True)
+
+    if "pending_planner_moves" in st.session_state:
+        moves = st.session_state["pending_planner_moves"]
+
+        st.markdown("**Move Report**")
+        if moves.empty:
+            st.info("No moves were made.")
+        else:
+            st.dataframe(moves, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download planner move report CSV",
+                data=moves.to_csv(index=False).encode("utf-8"),
+                file_name="planner_move_report.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+        apply_moves = st.checkbox("I reviewed the Smart Planner changes and want to apply them")
+        a1, a2 = st.columns(2)
+
+        with a1:
+            if st.button("Apply Smart Planner changes", type="primary", use_container_width=True):
+                if not apply_moves:
+                    st.warning("Check the review box first.")
+                else:
+                    st.session_state["sheets"][active_sheet] = st.session_state["pending_planner_df"]
+                    del st.session_state["pending_planner_df"]
+                    del st.session_state["pending_planner_moves"]
+                    if "pending_planner_summary" in st.session_state:
+                        del st.session_state["pending_planner_summary"]
+                    st.success("Applied planner changes.")
+                    st.rerun()
+
+        with a2:
+            if st.button("Clear Smart Planner results", use_container_width=True):
+                for k in ["pending_planner_df", "pending_planner_moves", "pending_planner_summary"]:
+                    if k in st.session_state:
+                        del st.session_state[k]
+                st.rerun()
+
+
 tabs = st.tabs(
     [
         "Time × Frequency",
@@ -1273,7 +1452,6 @@ tabs = st.tabs(
         "Unit Deconfliction",
         "Sponsor Deconfliction",
         "Conflict Tables",
-        "Smart Planner",
     ]
 )
 
@@ -1315,120 +1493,3 @@ with tabs[5]:
             mime="text/csv",
             use_container_width=True,
         )
-
-with tabs[6]:
-    st.subheader("Smart Planner — Time First, Then Frequency")
-    st.caption("Recommended workflow: deconflict by time first, then move frequencies only for conflicts that remain.")
-
-    mode = st.radio(
-        "Planner mode",
-        [
-            "Auto deconflict by time",
-            "Auto deconflict by frequency",
-            "Run full smart deconfliction",
-        ],
-        horizontal=True,
-    )
-
-    st.markdown("### Time Settings")
-    t1, t2, t3 = st.columns(3)
-    day_start = t1.number_input("Operating day start hour", value=6.0, min_value=0.0, max_value=23.75, step=0.5)
-    day_end = t2.number_input("Operating day end hour", value=20.0, min_value=0.25, max_value=24.0, step=0.5)
-    time_step = t3.number_input("Time step minutes", value=30, min_value=5, max_value=120, step=5)
-
-    st.markdown("### Frequency Settings")
-    p1, p2, p3, p4, p5 = st.columns(5)
-    low = p1.number_input("Search low MHz", value=2200.0, step=1.0)
-    high = p2.number_input("Search high MHz", value=2300.0, step=1.0)
-    freq_step = p3.number_input("Frequency step MHz", value=1.0, min_value=0.001, step=0.5)
-    guard = p4.number_input("Guard MHz", value=0.0, min_value=0.0, step=0.1)
-    max_passes = p5.number_input("Max passes", value=5, min_value=1, max_value=20, step=1)
-
-    if st.button("Run selected planner", type="primary", use_container_width=True):
-        if mode == "Auto deconflict by time":
-            new_df, moves = smart_time_deconflict(
-                edited_df,
-                day_start=day_start,
-                day_end=day_end,
-                step_minutes=int(time_step),
-                guard_mhz=guard,
-                max_passes=int(max_passes),
-            )
-            summary = pd.DataFrame(
-                [
-                    {
-                        "Planner Mode": "Time Only",
-                        "Final Conflicts": len(detect_conflicts(new_df)),
-                        "Move Rows": len(moves),
-                    }
-                ]
-            )
-
-        elif mode == "Auto deconflict by frequency":
-            new_df, moves = smart_frequency_deconflict(
-                edited_df,
-                low_mhz=low,
-                high_mhz=high,
-                step_mhz=freq_step,
-                guard_mhz=guard,
-                max_passes=int(max_passes),
-            )
-            summary = pd.DataFrame(
-                [
-                    {
-                        "Planner Mode": "Frequency Only",
-                        "Final Conflicts": len(detect_conflicts(new_df)),
-                        "Move Rows": len(moves),
-                    }
-                ]
-            )
-
-        else:
-            new_df, moves, summary = smart_full_deconflict(
-                edited_df,
-                day_start=day_start,
-                day_end=day_end,
-                time_step_minutes=int(time_step),
-                low_mhz=low,
-                high_mhz=high,
-                freq_step_mhz=freq_step,
-                guard_mhz=guard,
-                max_passes=int(max_passes),
-            )
-
-        st.session_state["pending_planner_df"] = new_df
-        st.session_state["pending_planner_moves"] = moves
-        st.session_state["pending_planner_summary"] = summary
-
-    if "pending_planner_summary" in st.session_state:
-        st.markdown("### Planner Summary")
-        st.dataframe(st.session_state["pending_planner_summary"], use_container_width=True, hide_index=True)
-
-    if "pending_planner_moves" in st.session_state:
-        st.markdown("### Planner Move Report")
-        moves = st.session_state["pending_planner_moves"]
-
-        if moves.empty:
-            st.info("No moves were made.")
-        else:
-            st.dataframe(moves, use_container_width=True, hide_index=True)
-            st.download_button(
-                "Download planner move report CSV",
-                data=moves.to_csv(index=False).encode("utf-8"),
-                file_name="planner_move_report.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-
-        apply_moves = st.checkbox("I reviewed the changes and want to apply them")
-        if st.button("Apply planner changes", use_container_width=True):
-            if not apply_moves:
-                st.warning("Check the review box first.")
-            else:
-                st.session_state["sheets"][active_sheet] = st.session_state["pending_planner_df"]
-                del st.session_state["pending_planner_df"]
-                del st.session_state["pending_planner_moves"]
-                if "pending_planner_summary" in st.session_state:
-                    del st.session_state["pending_planner_summary"]
-                st.success("Applied planner changes.")
-                st.rerun()
