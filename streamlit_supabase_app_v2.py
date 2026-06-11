@@ -4610,6 +4610,212 @@ def v491_export_plan(master, needs):
 
 
 
+
+# ---------------- V51 HARD FIXES: Active Filter + Matching Colors + Vertical Labels + Hide UI Dashboard ----------------
+
+V51_VISUAL_PALETTE = [
+    "#2563EB", "#F97316", "#22C55E", "#EAB308", "#A855F7",
+    "#EF4444", "#06B6D4", "#84CC16", "#EC4899", "#8B5CF6",
+    "#14B8A6", "#F59E0B", "#0EA5E9", "#F43F5E", "#64748B",
+    "#6366F1", "#15803D", "#C2410C", "#A16207", "#7C3AED",
+    "#0F766E", "#B45309", "#0369A1", "#BE185D", "#334155",
+]
+
+def v51_key(value):
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+def v51_bool(value, default=True):
+    try:
+        if pd.isna(value):
+            return default
+    except Exception:
+        pass
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    if s in ["true", "t", "yes", "y", "1", "on", "active", "checked", "x"]:
+        return True
+    if s in ["false", "f", "no", "n", "0", "off", "inactive", "unchecked", "", "none", "nan"]:
+        return False
+    return default
+
+def v51_float(value, default=None):
+    try:
+        if value is None or pd.isna(value):
+            return default
+    except Exception:
+        pass
+    try:
+        m = re.search(r"-?\d+(?:\.\d+)?", str(value).replace(",", ""))
+        return float(m.group(0)) if m else default
+    except Exception:
+        return default
+
+def v51_find_col(df, names):
+    if df is None or not hasattr(df, "columns"):
+        return None
+    lookup = {v51_key(c): c for c in df.columns}
+    for name in names:
+        k = v51_key(name)
+        if k in lookup:
+            return lookup[k]
+    for name in names:
+        k = v51_key(name)
+        for found_key, col in lookup.items():
+            if k and (k in found_key or found_key in k):
+                return col
+    return None
+
+def v51_normalize_active_locked(df):
+    if df is None or not hasattr(df, "copy"):
+        return df
+    out = df.copy()
+    active_col = v51_find_col(out, ["Active", "Enabled", "In Use", "Use", "Include"])
+    locked_col = v51_find_col(out, ["Locked", "Lock", "Lock Frequency", "Lock Both"])
+    if active_col is not None and active_col != "Active":
+        out = out.rename(columns={active_col: "Active"})
+    if locked_col is not None and locked_col != "Locked":
+        out = out.rename(columns={locked_col: "Locked"})
+    if "Active" not in out.columns:
+        out["Active"] = True
+    if "Locked" not in out.columns:
+        out["Locked"] = False
+    out["Active"] = out["Active"].apply(lambda v: v51_bool(v, True))
+    out["Locked"] = out["Locked"].apply(lambda v: v51_bool(v, False))
+    return out
+
+def v51_show_inactive():
+    for k in ["show_inactive_rows", "show_inactive", "show_inactive_frequencies", "include_inactive", "include_inactive_rows"]:
+        try:
+            if k in st.session_state:
+                return bool(st.session_state[k])
+        except Exception:
+            pass
+    return False
+
+def v51_filter_active(df, show_inactive=None):
+    if df is None or not hasattr(df, "copy"):
+        return df
+    if show_inactive is None:
+        show_inactive = v51_show_inactive()
+    out = v51_normalize_active_locked(df)
+    if not show_inactive and "Active" in out.columns:
+        out = out[out["Active"] == True].copy()
+    return out.reset_index(drop=True)
+
+def v51_recalc_start_end(df):
+    if df is None or not hasattr(df, "copy"):
+        return df
+    out = v51_normalize_active_locked(df)
+    center_col = v51_find_col(out, ["Center Frequency (MHz)", "Center Frequency", "CenterF", "Frequency"])
+    bw_col = v51_find_col(out, ["Bandwidth (MHz)", "Bandwidth", "BW"])
+    start_col = v51_find_col(out, ["Start Frequency (MHz)", "Start Frequency", "StartF"])
+    end_col = v51_find_col(out, ["End Frequency (MHz)", "End Frequency", "EndF"])
+    if center_col is None or bw_col is None:
+        return out
+    if start_col is None:
+        out["Start Frequency (MHz)"] = None
+        start_col = "Start Frequency (MHz)"
+    if end_col is None:
+        out["End Frequency (MHz)"] = None
+        end_col = "End Frequency (MHz)"
+    for idx, row in out.iterrows():
+        if "Locked" in out.columns and v51_bool(row.get("Locked"), False):
+            continue
+        center = v51_float(row.get(center_col), None)
+        bw = v51_float(row.get(bw_col), None)
+        if center is None or bw is None or bw <= 0:
+            continue
+        out.at[idx, start_col] = round(center - bw / 2.0, 6)
+        out.at[idx, end_col] = round(center + bw / 2.0, 6)
+    return out
+
+def v51_color_label(value):
+    s = str(value or "").strip()
+    if not s or s.lower() in ["nan", "none", "blank", "(blank)"]:
+        return "(blank)"
+    return s
+
+def v51_color_field(df, preferred="Tech"):
+    if df is None or not hasattr(df, "columns"):
+        return None
+    for col in [preferred, "Tech", "Unit", "Sponsor", "Equipment", "Tech Category", "Location", "NTC Area"]:
+        if col in df.columns:
+            return col
+    return df.columns[0] if len(df.columns) else None
+
+def v51_stable_color(label):
+    label = v51_color_label(label)
+    digest = hashlib.md5(label.encode("utf-8")).hexdigest()
+    return V51_VISUAL_PALETTE[int(digest[:8], 16) % len(V51_VISUAL_PALETTE)]
+
+def v51_color_map(df, color_by="Tech"):
+    if df is None or color_by is None or color_by not in df.columns:
+        return {}
+    labels = []
+    for value in df[color_by].fillna("(blank)").astype(str).tolist():
+        label = v51_color_label(value)
+        if label not in labels:
+            labels.append(label)
+    return {label: v51_stable_color(label) for label in labels}
+
+def v51_row_color(row, color_by, color_map):
+    try:
+        label = v51_color_label(row.get(color_by, "(blank)"))
+    except Exception:
+        label = "(blank)"
+    return color_map.get(label, v51_stable_color(label))
+
+def v51_plot_df(df, preferred_color="Tech"):
+    plot_df = v51_filter_active(df, show_inactive=v51_show_inactive())
+    plot_df = v51_recalc_start_end(plot_df)
+    color_by = v51_color_field(plot_df, preferred=preferred_color)
+    cmap = v51_color_map(plot_df, color_by)
+    return plot_df, color_by, cmap
+
+def v51_draw_legend(ax, color_by, color_map):
+    if not color_map:
+        return
+    try:
+        import matplotlib.pyplot as plt
+        handles = [
+            plt.Line2D([0], [0], marker="s", linestyle="", markerfacecolor=color,
+                       markeredgecolor=color, markersize=10, label=label)
+            for label, color in color_map.items()
+        ]
+        leg = ax.legend(handles=handles, title=color_by, loc="center left",
+                        bbox_to_anchor=(1.01, 0.5), frameon=True)
+        leg.get_frame().set_facecolor("#111827")
+        leg.get_frame().set_edgecolor("#CBD5E1")
+        plt.setp(leg.get_texts(), color="white", fontsize=8)
+        plt.setp(leg.get_title(), color="white", fontsize=9, fontweight="bold")
+    except Exception:
+        pass
+
+def v51_vertical_label(ax, x, y, text, color="white", fontsize=8):
+    try:
+        ax.text(x, y, str(text), ha="center", va="center", rotation=90,
+                color=color, fontsize=fontsize, fontweight="bold", clip_on=True)
+    except Exception:
+        pass
+
+def v51_format_freq_label(value):
+    f = v51_float(value, None)
+    return "" if f is None else f"{f:.3f} MHz"
+
+def v51_hide_dashboard_tab_names(tab_names):
+    return [t for t in tab_names if str(t).strip().lower() != "dashboard"]
+
+# Backward-compatible aliases for previous versions.
+filter_active_rows_v495 = v51_filter_active
+get_show_inactive_v495 = v51_show_inactive
+recalc_all_start_end_v497 = v51_recalc_start_end
+recalc_start_end_from_center_bandwidth_v497 = lambda df, original_df=None, only_changed=False: v51_recalc_start_end(df)
+apply_shared_visual_colors_v496 = lambda df, preferred="Tech": (v51_color_field(df, preferred), v51_color_map(df, v51_color_field(df, preferred)))
+row_visual_color_v496 = v51_row_color
+draw_shared_legend_v496 = v51_draw_legend
+
+
 # ---------------- V50 FULL FIX: Column Order + Active Filter + Legend Colors + Frequency Formulas ----------------
 
 APP_COLUMNS = [
@@ -6639,7 +6845,8 @@ if not project_id:
 
 current_project = next((p for p in projects if p["id"] == project_id), {})
 project_name = current_project.get("name", "Selected")
-if not user_has_project_access(project_id, current_user_id):
+if not user_has_project_access(project_id, current_user_id
+):
     st.error("You do not have access to this project. Ask an administrator to add you as a project member.")
     st.stop()
 
@@ -8156,3 +8363,9 @@ with st.expander("Export briefing PDF", expanded=False):
             log_audit_event(project_id, "briefing_pdf_generated", logged_in_user, {"project": project_name})
         except Exception as e:
             st.error(f"Could not build PDF briefing: {e}")
+
+# ---------------- V51 View Controls ----------------
+with st.expander("View Controls", expanded=False):
+    st.caption("Dashboard UI removed. Active=False rows are hidden from visuals, conflicts, maps, and planner by default.")
+    st.checkbox("Show inactive frequencies", value=False, key="show_inactive_rows")
+    st.info("Frequency labels display vertically. Legend and chart colors use the same shared color map.")
