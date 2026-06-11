@@ -9,7 +9,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
-
 # ============================================================
 # Spectrum Planner — Presentation Safe Full App
 # ============================================================
@@ -604,6 +603,16 @@ def intervals_overlap(a1, a2, b1, b2) -> bool:
     return max(a1, b1) < min(a2, b2)
 
 
+def format_time_hhmm(hours_float):
+    hours_float = float(hours_float) % 24.0
+    hh = int(hours_float)
+    mm = int(round((hours_float - hh) * 60))
+    if mm >= 60:
+        hh = (hh + 1) % 24
+        mm = 0
+    return f"{hh:02d}{mm:02d}"
+
+
 def row_window(row, start_time_col, end_time_col):
     t1 = time_to_hours(row.get(start_time_col)) if start_time_col else None
     t2 = time_to_hours(row.get(end_time_col)) if end_time_col else None
@@ -627,7 +636,23 @@ def row_frequency_interval(row, center_col, bw_col):
     return center, bw, center - bw / 2.0, center + bw / 2.0
 
 
-def get_conflict_row_indexes(df: pd.DataFrame):
+def frequency_rows_conflict(row_a, row_b, center_col, bw_col, start_time_col, end_time_col, guard_mhz=0.0):
+    ac, abw, af1, af2 = row_frequency_interval(row_a, center_col, bw_col)
+    bc, bbw, bf1, bf2 = row_frequency_interval(row_b, center_col, bw_col)
+
+    if ac is None or bc is None:
+        return False
+
+    at1, at2 = row_window(row_a, start_time_col, end_time_col)
+    bt1, bt2 = row_window(row_b, start_time_col, end_time_col)
+
+    freq_overlap = intervals_overlap(af1 - guard_mhz, af2 + guard_mhz, bf1, bf2)
+    time_overlap = intervals_overlap(at1, at2, bt1, bt2)
+
+    return freq_overlap and time_overlap
+
+
+def get_conflict_row_indexes(df: pd.DataFrame, guard_mhz=0.0):
     working = active_only(df, show_inactive=False)
 
     center_col = find_col(working, ["Center Frequency (MHz)", "Center Frequency", "CenterF", "Frequency"])
@@ -642,24 +667,43 @@ def get_conflict_row_indexes(df: pd.DataFrame):
 
     for i in range(len(working)):
         row_a = working.iloc[i]
-        ac, abw, af1, af2 = row_frequency_interval(row_a, center_col, bw_col)
-        if ac is None:
-            continue
-        at1, at2 = row_window(row_a, start_time_col, end_time_col)
-
         for j in range(i + 1, len(working)):
             row_b = working.iloc[j]
-            bc, bbw, bf1, bf2 = row_frequency_interval(row_b, center_col, bw_col)
-            if bc is None:
-                continue
-            bt1, bt2 = row_window(row_b, start_time_col, end_time_col)
-
-            if intervals_overlap(af1, af2, bf1, bf2) and intervals_overlap(at1, at2, bt1, bt2):
-                # Map back to original row indexes by using dataframe index.
+            if frequency_rows_conflict(row_a, row_b, center_col, bw_col, start_time_col, end_time_col, guard_mhz):
                 conflict_indexes.add(working.index[i])
                 conflict_indexes.add(working.index[j])
 
     return conflict_indexes
+
+
+def time_slot_is_open(df, moving_index, new_start, new_end, center_col, bw_col, start_time_col, end_time_col, guard_mhz=0.0):
+    moving = df.loc[moving_index]
+    moving_center, moving_bw, moving_f1, moving_f2 = row_frequency_interval(moving, center_col, bw_col)
+
+    if moving_center is None:
+        return False
+
+    for idx, other in df.iterrows():
+        if idx == moving_index:
+            continue
+        if not to_bool(other.get("Active"), True):
+            continue
+
+        oc, obw, of1, of2 = row_frequency_interval(other, center_col, bw_col)
+        if oc is None:
+            continue
+
+        ot1, ot2 = row_window(other, start_time_col, end_time_col)
+
+        # If frequencies do not overlap, time can overlap.
+        if not intervals_overlap(moving_f1 - guard_mhz, moving_f2 + guard_mhz, of1, of2):
+            continue
+
+        # If frequencies overlap, new time cannot overlap.
+        if intervals_overlap(new_start, new_end, ot1, ot2):
+            return False
+
+    return True
 
 
 def frequency_is_open(candidate_center, candidate_bw, moving_index, df, center_col, bw_col, start_time_col, end_time_col, guard_mhz):
@@ -682,11 +726,9 @@ def frequency_is_open(candidate_center, candidate_bw, moving_index, df, center_c
 
         other_t1, other_t2 = row_window(other, start_time_col, end_time_col)
 
-        # Only care about rows that overlap in time.
         if not intervals_overlap(moving_t1, moving_t2, other_t1, other_t2):
             continue
 
-        # Then check frequency overlap with guard band.
         if intervals_overlap(candidate_start, candidate_end, other_start, other_end):
             return False
 
@@ -708,18 +750,192 @@ def build_candidate_centers(low_mhz, high_mhz, step_mhz, bw_mhz, old_center=None
     return centers
 
 
+def build_candidate_time_slots(day_start, day_end, window_hours, step_minutes, old_start=None):
+    slots = []
+    step_hours = max(float(step_minutes) / 60.0, 1.0 / 60.0)
+
+    x = float(day_start)
+    last = float(day_end) - float(window_hours)
+
+    while x <= last + 1e-9:
+        slots.append((round(x, 6), round(x + window_hours, 6)))
+        x += step_hours
+
+    if old_start is not None:
+        slots = sorted(slots, key=lambda s: (abs(s[0] - old_start), s[0]))
+
+    return slots
+
+
+def smart_time_deconflict(df: pd.DataFrame, day_start: float = 6.0, day_end: float = 20.0, step_minutes: int = 30, guard_mhz: float = 0.0, max_passes: int = 5):
+    """
+    Time-first deconfliction.
+
+    - Moves only Start Time / End Time.
+    - Keeps center frequency and bandwidth unchanged.
+    - Preserves original window length, defaulting to 2 hours.
+    - Moves only active, unlocked rows.
+    """
+
+    out = normalize_columns(df, add_missing=True)
+    out = recalc_start_end(out)
+
+    center_col = find_col(out, ["Center Frequency (MHz)", "Center Frequency", "CenterF", "Frequency"])
+    bw_col = find_col(out, ["Bandwidth (MHz)", "Bandwidth", "BW"])
+    start_time_col = find_col(out, ["Start Time", "StartTime", "Start"])
+    end_time_col = find_col(out, ["End Time", "EndTime", "End"])
+    equipment_col = find_col(out, ["Equipment"])
+    unit_col = find_col(out, ["Unit"])
+    tech_col = find_col(out, ["Tech"])
+
+    if center_col is None or bw_col is None or start_time_col is None or end_time_col is None:
+        return out, pd.DataFrame([{"Message": "Center, Bandwidth, Start Time, and End Time columns are required."}])
+
+    moves = []
+    previous_conflict_count = None
+
+    for pass_number in range(1, max_passes + 1):
+        conflict_table = detect_conflicts(out)
+        conflict_count = len(conflict_table)
+
+        if conflict_count == 0:
+            break
+
+        if previous_conflict_count is not None and conflict_count >= previous_conflict_count:
+            break
+
+        previous_conflict_count = conflict_count
+        conflict_indexes = get_conflict_row_indexes(out, guard_mhz=guard_mhz)
+
+        if not conflict_indexes:
+            break
+
+        ranked = []
+        for idx in conflict_indexes:
+            if idx not in out.index:
+                continue
+
+            row = out.loc[idx]
+
+            if not to_bool(row.get("Active"), True):
+                continue
+            if to_bool(row.get("Locked"), False):
+                continue
+
+            old_start, old_end = row_window(row, start_time_col, end_time_col)
+            window_hours = max(old_end - old_start, 0.25)
+            ranked.append((idx, window_hours, old_start, old_end))
+
+        ranked = sorted(ranked, key=lambda x: (-x[1], x[2]))
+
+        moved_this_pass = 0
+
+        for idx, window_hours, old_start, old_end in ranked:
+            row = out.loc[idx]
+
+            candidates = build_candidate_time_slots(
+                day_start=day_start,
+                day_end=day_end,
+                window_hours=window_hours,
+                step_minutes=step_minutes,
+                old_start=old_start,
+            )
+
+            best_slot = None
+            best_conflict_count = None
+
+            for new_start, new_end in candidates:
+                if abs(new_start - old_start) < 1e-9 and abs(new_end - old_end) < 1e-9:
+                    continue
+
+                if not time_slot_is_open(
+                    df=out,
+                    moving_index=idx,
+                    new_start=new_start,
+                    new_end=new_end,
+                    center_col=center_col,
+                    bw_col=bw_col,
+                    start_time_col=start_time_col,
+                    end_time_col=end_time_col,
+                    guard_mhz=guard_mhz,
+                ):
+                    continue
+
+                test = out.copy()
+                test.at[idx, start_time_col] = format_time_hhmm(new_start)
+                test.at[idx, end_time_col] = format_time_hhmm(new_end)
+                test_conflicts = len(detect_conflicts(test))
+
+                if best_conflict_count is None or test_conflicts < best_conflict_count:
+                    best_conflict_count = test_conflicts
+                    best_slot = (new_start, new_end)
+
+                if test_conflicts < conflict_count:
+                    break
+
+            if best_slot is not None:
+                before_conflicts = len(detect_conflicts(out))
+                new_start, new_end = best_slot
+
+                out.at[idx, start_time_col] = format_time_hhmm(new_start)
+                out.at[idx, end_time_col] = format_time_hhmm(new_end)
+
+                after_conflicts = len(detect_conflicts(out))
+
+                moves.append(
+                    {
+                        "Pass": pass_number,
+                        "Row": int(idx) + 1,
+                        "Unit": row.get(unit_col, "") if unit_col else "",
+                        "Equipment": row.get(equipment_col, "") if equipment_col else "",
+                        "Tech": row.get(tech_col, "") if tech_col else "",
+                        "Old Start Time": format_time_hhmm(old_start),
+                        "Old End Time": format_time_hhmm(old_end),
+                        "New Start Time": format_time_hhmm(new_start),
+                        "New End Time": format_time_hhmm(new_end),
+                        "Window Hours": round(window_hours, 3),
+                        "Conflicts Before": before_conflicts,
+                        "Conflicts After": after_conflicts,
+                        "Action": "Moved time window; frequency unchanged",
+                    }
+                )
+
+                moved_this_pass += 1
+
+        if moved_this_pass == 0:
+            break
+
+    remaining_conflicts = len(detect_conflicts(out))
+
+    if not moves:
+        return out, pd.DataFrame(
+            [
+                {
+                    "Message": "No safe time move found. Try widening the operating day, lowering step minutes, or unlocking rows.",
+                    "Remaining Conflicts": remaining_conflicts,
+                    "Day Start": day_start,
+                    "Day End": day_end,
+                    "Step Minutes": step_minutes,
+                    "Guard MHz": guard_mhz,
+                }
+            ]
+        )
+
+    moves_df = pd.DataFrame(moves)
+    moves_df["Remaining Conflicts After Time Planner"] = remaining_conflicts
+    return out, moves_df
+
+
 def smart_frequency_deconflict(df: pd.DataFrame, low_mhz: float, high_mhz: float, step_mhz: float, guard_mhz: float = 0.0, max_passes: int = 5):
     """
-    Smart Frequency Deconfliction.
+    Frequency deconfliction.
 
-    What it does:
     - Uses ONLY active rows for conflict detection.
     - Inactive rows stay saved but are ignored.
     - Locked rows are not moved.
     - Start/End Time remain unchanged.
     - Bandwidth remains unchanged.
     - Moves center frequency to the nearest open slot inside the search range.
-    - Repeats passes until conflicts stop improving or are cleared.
     """
 
     out = normalize_columns(df, add_missing=True)
@@ -750,16 +966,14 @@ def smart_frequency_deconflict(df: pd.DataFrame, low_mhz: float, high_mhz: float
             break
 
         if previous_conflict_count is not None and conflict_count >= previous_conflict_count:
-            # Stop if the previous pass did not improve the plan.
             break
 
         previous_conflict_count = conflict_count
-        conflict_indexes = get_conflict_row_indexes(out)
+        conflict_indexes = get_conflict_row_indexes(out, guard_mhz=guard_mhz)
 
         if not conflict_indexes:
             break
 
-        # Move the worst rows first: wider bandwidth first, then center.
         ranked_indexes = []
         for idx in conflict_indexes:
             if idx not in out.index:
@@ -768,7 +982,6 @@ def smart_frequency_deconflict(df: pd.DataFrame, low_mhz: float, high_mhz: float
 
             if not to_bool(row.get("Active"), True):
                 continue
-
             if to_bool(row.get("Locked"), False):
                 continue
 
@@ -819,7 +1032,6 @@ def smart_frequency_deconflict(df: pd.DataFrame, low_mhz: float, high_mhz: float
                     best_conflict_count = test_conflicts
                     best_candidate = candidate
 
-                # Perfect move for this row.
                 if test_conflicts < conflict_count:
                     break
 
@@ -872,9 +1084,66 @@ def smart_frequency_deconflict(df: pd.DataFrame, low_mhz: float, high_mhz: float
         )
 
     moves_df = pd.DataFrame(moves)
-    moves_df["Remaining Conflicts After Planner"] = remaining_conflicts
-
+    moves_df["Remaining Conflicts After Frequency Planner"] = remaining_conflicts
     return out, moves_df
+
+
+def smart_full_deconflict(df: pd.DataFrame, day_start: float, day_end: float, time_step_minutes: int, low_mhz: float, high_mhz: float, freq_step_mhz: float, guard_mhz: float = 0.0, max_passes: int = 5):
+    """
+    Full smart deconfliction:
+    1. Try time deconfliction first.
+    2. Then run frequency deconfliction on remaining conflicts.
+    """
+
+    starting_conflicts = len(detect_conflicts(df))
+
+    time_df, time_moves = smart_time_deconflict(
+        df,
+        day_start=day_start,
+        day_end=day_end,
+        step_minutes=time_step_minutes,
+        guard_mhz=guard_mhz,
+        max_passes=max_passes,
+    )
+
+    after_time_conflicts = len(detect_conflicts(time_df))
+
+    freq_df, freq_moves = smart_frequency_deconflict(
+        time_df,
+        low_mhz=low_mhz,
+        high_mhz=high_mhz,
+        step_mhz=freq_step_mhz,
+        guard_mhz=guard_mhz,
+        max_passes=max_passes,
+    )
+
+    final_conflicts = len(detect_conflicts(freq_df))
+
+    if not time_moves.empty:
+        time_moves = time_moves.copy()
+        time_moves["Planner Stage"] = "1 - Time"
+    if not freq_moves.empty:
+        freq_moves = freq_moves.copy()
+        freq_moves["Planner Stage"] = "2 - Frequency"
+
+    all_moves = pd.concat([time_moves, freq_moves], ignore_index=True, sort=False)
+
+    summary = pd.DataFrame(
+        [
+            {
+                "Starting Conflicts": starting_conflicts,
+                "After Time Deconfliction": after_time_conflicts,
+                "Final Conflicts": final_conflicts,
+                "Total Move Rows": len(all_moves),
+                "Planner Mode": "Time first, then Frequency",
+            }
+        ]
+    )
+
+    if all_moves.empty:
+        all_moves = summary
+
+    return freq_df, all_moves, summary
 
 
 
@@ -1011,34 +1280,108 @@ with tabs[5]:
         )
 
 with tabs[6]:
-    st.subheader("Smart Planner — Auto Deconflict by Frequency")
-    st.caption("Moves unlocked active rows to open frequency spots. Time windows stay unchanged.")
+    st.subheader("Smart Planner — Time First, Then Frequency")
+    st.caption("Recommended workflow: deconflict by time first, then move frequencies only for conflicts that remain.")
 
+    mode = st.radio(
+        "Planner mode",
+        [
+            "Auto deconflict by time",
+            "Auto deconflict by frequency",
+            "Run full smart deconfliction",
+        ],
+        horizontal=True,
+    )
+
+    st.markdown("### Time Settings")
+    t1, t2, t3 = st.columns(3)
+    day_start = t1.number_input("Operating day start hour", value=6.0, min_value=0.0, max_value=23.75, step=0.5)
+    day_end = t2.number_input("Operating day end hour", value=20.0, min_value=0.25, max_value=24.0, step=0.5)
+    time_step = t3.number_input("Time step minutes", value=30, min_value=5, max_value=120, step=5)
+
+    st.markdown("### Frequency Settings")
     p1, p2, p3, p4, p5 = st.columns(5)
     low = p1.number_input("Search low MHz", value=2200.0, step=1.0)
     high = p2.number_input("Search high MHz", value=2300.0, step=1.0)
-    step = p3.number_input("Step MHz", value=1.0, min_value=0.001, step=0.5)
+    freq_step = p3.number_input("Frequency step MHz", value=1.0, min_value=0.001, step=0.5)
     guard = p4.number_input("Guard MHz", value=0.0, min_value=0.0, step=0.1)
     max_passes = p5.number_input("Max passes", value=5, min_value=1, max_value=20, step=1)
 
-    if st.button("Auto deconflict by frequency", type="primary", use_container_width=True):
-        new_df, moves = smart_frequency_deconflict(
-            edited_df,
-            low_mhz=low,
-            high_mhz=high,
-            step_mhz=step,
-            guard_mhz=guard,
-            max_passes=int(max_passes),
-        )
+    if st.button("Run selected planner", type="primary", use_container_width=True):
+        if mode == "Auto deconflict by time":
+            new_df, moves = smart_time_deconflict(
+                edited_df,
+                day_start=day_start,
+                day_end=day_end,
+                step_minutes=int(time_step),
+                guard_mhz=guard,
+                max_passes=int(max_passes),
+            )
+            summary = pd.DataFrame(
+                [
+                    {
+                        "Planner Mode": "Time Only",
+                        "Final Conflicts": len(detect_conflicts(new_df)),
+                        "Move Rows": len(moves),
+                    }
+                ]
+            )
+
+        elif mode == "Auto deconflict by frequency":
+            new_df, moves = smart_frequency_deconflict(
+                edited_df,
+                low_mhz=low,
+                high_mhz=high,
+                step_mhz=freq_step,
+                guard_mhz=guard,
+                max_passes=int(max_passes),
+            )
+            summary = pd.DataFrame(
+                [
+                    {
+                        "Planner Mode": "Frequency Only",
+                        "Final Conflicts": len(detect_conflicts(new_df)),
+                        "Move Rows": len(moves),
+                    }
+                ]
+            )
+
+        else:
+            new_df, moves, summary = smart_full_deconflict(
+                edited_df,
+                day_start=day_start,
+                day_end=day_end,
+                time_step_minutes=int(time_step),
+                low_mhz=low,
+                high_mhz=high,
+                freq_step_mhz=freq_step,
+                guard_mhz=guard,
+                max_passes=int(max_passes),
+            )
+
         st.session_state["pending_planner_df"] = new_df
         st.session_state["pending_planner_moves"] = moves
+        st.session_state["pending_planner_summary"] = summary
+
+    if "pending_planner_summary" in st.session_state:
+        st.markdown("### Planner Summary")
+        st.dataframe(st.session_state["pending_planner_summary"], use_container_width=True, hide_index=True)
 
     if "pending_planner_moves" in st.session_state:
+        st.markdown("### Planner Move Report")
         moves = st.session_state["pending_planner_moves"]
+
         if moves.empty:
             st.info("No moves were made.")
         else:
             st.dataframe(moves, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download planner move report CSV",
+                data=moves.to_csv(index=False).encode("utf-8"),
+                file_name="planner_move_report.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
         apply_moves = st.checkbox("I reviewed the changes and want to apply them")
         if st.button("Apply planner changes", use_container_width=True):
@@ -1048,5 +1391,7 @@ with tabs[6]:
                 st.session_state["sheets"][active_sheet] = st.session_state["pending_planner_df"]
                 del st.session_state["pending_planner_df"]
                 del st.session_state["pending_planner_moves"]
+                if "pending_planner_summary" in st.session_state:
+                    del st.session_state["pending_planner_summary"]
                 st.success("Applied planner changes.")
                 st.rerun()
