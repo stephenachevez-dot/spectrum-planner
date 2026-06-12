@@ -71,3 +71,32 @@ add column if not exists created_at timestamp with time zone default now();
 create index if not exists idx_allocation_rows_project on public.allocation_rows(project_id);
 create index if not exists idx_allocation_versions_project on public.allocation_versions(project_id);
 create index if not exists idx_save_events_project on public.save_events(project_id);
+
+create table if not exists shared_workbooks (
+  project_id text primary key,
+  workbook jsonb not null,
+  updated_by text,
+  updated_at timestamptz default now()
+);
+
+alter table shared_workbooks enable row level security;
+
+drop policy if exists "authenticated users can read shared workbooks" on shared_workbooks;
+create policy "authenticated users can read shared workbooks"
+on shared_workbooks for select
+to authenticated
+using (true);
+
+drop policy if exists "authenticated users can insert shared workbooks" on shared_workbooks;
+create policy "authenticated users can insert shared workbooks"
+on shared_workbooks for insert
+to authenticated
+with check (true);
+
+drop policy if exists "authenticated users can update shared workbooks" on shared_workbooks;
+create policy "authenticated users can update shared workbooks"
+on shared_workbooks for update
+to authenticated
+using (true)
+with check (true);
+
