@@ -1,6 +1,14 @@
 import streamlit as st
 st.set_page_config(page_title="Spectrum Planner", layout="wide")
 
+# - V12: Adds Supabase login + shared collaborative workbook persistence.
+try:
+    from supabase import create_client
+except Exception:
+    create_client = None
+
+
+# - V11: True lower-power foreground visual mode with draw controls.
 # - V9: Fixes lower-power foreground drawing with controlled z-order, transparency, and label priority.
 # - V8: Adds workbook backup/restore and safer autosave-to-session workflow.
 # - V7: Adds visual extraction/export buttons for PNG and all-visuals PDF.
@@ -9,6 +17,7 @@ st.set_page_config(page_title="Spectrum Planner", layout="wide")
 import io
 import re
 import hashlib
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -291,77 +300,94 @@ def stable_color(label: str) -> str:
 
 def sort_for_visual_front(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Presentation-safe visual draw order.
+    True visual draw order only. Data is not changed for saving.
 
-    Goal:
-    - High-power / wide-band systems are drawn first as background.
-    - Lower-power / narrow-band systems are drawn later and appear in front.
-    - The data order itself is not changed for saving; this is only for visuals.
+    Matplotlib draws later rows on top. For 'Lower power in front':
+      - high power rows are sorted first
+      - low power rows are sorted last
     """
     out = df.copy()
 
     power_col = find_col(out, ["Power (W)", "PowerW", "Power"])
     bw_col = find_col(out, ["Bandwidth (MHz)", "Bandwidth", "BW"])
 
-    if power_col is not None:
-        out["_PlotPower"] = out[power_col].apply(lambda v: to_float(v, 0.0))
+    out["_PlotPower"] = out[power_col].apply(lambda v: to_float(v, 0.0)) if power_col else 0.0
+    out["_PlotBandwidth"] = out[bw_col].apply(lambda v: to_float(v, 0.0)) if bw_col else 0.0
+    out["_OriginalOrder"] = range(len(out))
+
+    draw_mode = st.session_state.get("visual_draw_order", "Lower power in front")
+
+    if draw_mode == "Lower power in front":
+        # High power first/background, low power last/foreground.
+        out = out.sort_values(
+            by=["_PlotPower", "_PlotBandwidth", "_OriginalOrder"],
+            ascending=[False, False, True],
+            kind="mergesort",
+        )
+    elif draw_mode == "Higher power in front":
+        # Low power first/background, high power last/foreground.
+        out = out.sort_values(
+            by=["_PlotPower", "_PlotBandwidth", "_OriginalOrder"],
+            ascending=[True, True, True],
+            kind="mergesort",
+        )
     else:
-        out["_PlotPower"] = 0.0
+        out = out.sort_values("_OriginalOrder", kind="mergesort")
 
-    if bw_col is not None:
-        out["_PlotBandwidth"] = out[bw_col].apply(lambda v: to_float(v, 0.0))
-    else:
-        out["_PlotBandwidth"] = 0.0
-
-    # Highest power and widest bandwidth first. Smaller/lower-power systems draw last/on top.
-    out = out.sort_values(
-        by=["_PlotPower", "_PlotBandwidth"],
-        ascending=[False, False],
-        kind="mergesort",
-    )
-
-    return out.drop(columns=["_PlotPower", "_PlotBandwidth"], errors="ignore")
+    return out.drop(columns=["_PlotPower", "_PlotBandwidth", "_OriginalOrder"], errors="ignore")
 
 
 def visual_zorder_and_alpha(power_value, max_power):
     """
-    Better foreground control:
-    - High-power rows are background with more transparency.
-    - Lower-power rows are foreground with stronger visibility.
+    Controlled z-order/alpha:
+    - Lower power in front means low power gets higher zorder and stronger opacity.
+    - High power becomes a transparent background layer.
     """
+    draw_mode = st.session_state.get("visual_draw_order", "Lower power in front")
+
+    high_alpha = float(st.session_state.get("high_power_alpha", 0.35))
+    low_alpha = float(st.session_state.get("low_power_alpha", 0.95))
+
     power = to_float(power_value, 0.0)
     max_power = max(to_float(max_power, 1.0), 1.0)
-
-    # Ratio close to 1 = high power/background.
     ratio = max(0.0, min(power / max_power, 1.0))
 
-    # High power should not hide smaller systems.
-    alpha = 0.42 + (1.0 - ratio) * 0.43
-    alpha = max(0.42, min(alpha, 0.88))
+    if draw_mode == "Lower power in front":
+        # High power: ratio near 1 -> low zorder, high transparency.
+        # Low power: ratio near 0 -> high zorder, high opacity.
+        alpha = high_alpha + (1.0 - ratio) * (low_alpha - high_alpha)
+        zorder = 10 + int((1.0 - ratio) * 1000)
+    elif draw_mode == "Higher power in front":
+        alpha = low_alpha + ratio * (high_alpha - low_alpha)
+        zorder = 10 + int(ratio * 1000)
+    else:
+        alpha = 0.78
+        zorder = 100
 
-    # Low power gets higher z-order.
-    zorder = 10 + int((1.0 - ratio) * 90)
+    return zorder, max(0.05, min(alpha, 1.0))
 
-    return zorder, alpha
 
 
 def should_label_row(row, power_col, max_power, total_rows):
     """
-    Prevent label clutter:
-    - Always label smaller/lower-power foreground rows.
-    - Label all rows when chart is small.
-    - For dense charts, suppress some high-power background labels.
+    Label foreground rows more aggressively.
+    In lower-power foreground mode, low-power rows keep labels.
     """
-    if total_rows <= 60:
+    if total_rows <= 80:
         return True
 
     power = to_float(row.get(power_col), 0.0) if power_col else 0.0
     max_power = max(to_float(max_power, 1.0), 1.0)
     ratio = power / max_power if max_power else 0.0
 
-    # Lower-power rows are the ones we need to see in front.
-    return ratio <= 0.65
+    draw_mode = st.session_state.get("visual_draw_order", "Lower power in front")
 
+    if draw_mode == "Lower power in front":
+        return ratio <= 0.70
+    if draw_mode == "Higher power in front":
+        return ratio >= 0.30
+
+    return total_rows <= 120
 
 
 def build_color_map(df: pd.DataFrame, color_by: str) -> dict:
@@ -1353,21 +1379,286 @@ def build_all_visuals_for_export(df, dark=True):
     return figures
 
 
+
+# ============================================================
+# V12 Supabase Collaboration Helpers
+# ============================================================
+
+DEFAULT_PROJECT_ID = "main_spectrum_workbook"
+
+def get_secret_value(*names, default=None):
+    for name in names:
+        try:
+            if name in st.secrets:
+                return st.secrets[name]
+        except Exception:
+            pass
+
+        try:
+            value = st.secrets
+            for part in name.split("."):
+                value = value[part]
+            return value
+        except Exception:
+            pass
+
+    return default
+
+
+def supabase_configured():
+    url = get_secret_value("SUPABASE_URL", "supabase.url")
+    key = get_secret_value("SUPABASE_ANON_KEY", "supabase.anon_key")
+    return bool(url and key and create_client is not None)
+
+
+def get_supabase_client():
+    if "supabase_client" in st.session_state:
+        return st.session_state["supabase_client"]
+
+    url = get_secret_value("SUPABASE_URL", "supabase.url")
+    key = get_secret_value("SUPABASE_ANON_KEY", "supabase.anon_key")
+
+    if not url or not key or create_client is None:
+        return None
+
+    client = create_client(url, key)
+    st.session_state["supabase_client"] = client
+    return client
+
+
+def workbook_to_jsonable(sheets: dict):
+    payload = {}
+    for sheet_name, df in sheets.items():
+        safe_df = normalize_columns(recalc_start_end(df), add_missing=True)
+        safe_df = safe_df.where(pd.notnull(safe_df), None)
+        payload[str(sheet_name)] = safe_df.to_dict(orient="records")
+    return payload
+
+
+def workbook_from_jsonable(payload):
+    sheets = {}
+    if not isinstance(payload, dict):
+        return sheets
+
+    for sheet_name, records in payload.items():
+        try:
+            df = pd.DataFrame(records if isinstance(records, list) else [])
+            sheets[str(sheet_name)] = normalize_columns(df, add_missing=True)
+        except Exception:
+            sheets[str(sheet_name)] = normalize_columns(pd.DataFrame(), add_missing=True)
+
+    return sheets
+
+
+def login_supabase(email, password):
+    client = get_supabase_client()
+    if client is None:
+        return False, "Supabase is not configured."
+
+    try:
+        res = client.auth.sign_in_with_password({"email": email, "password": password})
+        st.session_state["sb_user_email"] = email
+        st.session_state["sb_session"] = res
+        return True, "Logged in."
+    except Exception as exc:
+        return False, f"Login failed: {exc}"
+
+
+def logout_supabase():
+    client = get_supabase_client()
+    try:
+        if client is not None:
+            client.auth.sign_out()
+    except Exception:
+        pass
+
+    for key in ["sb_user_email", "sb_session"]:
+        if key in st.session_state:
+            del st.session_state[key]
+
+
+def ensure_shared_workbook_table_note():
+    return """
+Supabase table required:
+
+```sql
+create table if not exists shared_workbooks (
+  project_id text primary key,
+  workbook jsonb not null,
+  updated_by text,
+  updated_at timestamptz default now()
+);
+```
+
+Add `SUPABASE_URL` and `SUPABASE_ANON_KEY` to Streamlit secrets.
+Create login accounts under Supabase Authentication.
+"""
+
+
+def load_shared_workbook(project_id=DEFAULT_PROJECT_ID):
+    client = get_supabase_client()
+    if client is None:
+        return False, "Supabase is not configured."
+
+    try:
+        result = client.table("shared_workbooks").select("*").eq("project_id", project_id).limit(1).execute()
+        rows = result.data or []
+
+        if not rows:
+            return False, "No shared workbook exists yet. Upload a workbook and click Save shared."
+
+        payload = rows[0].get("workbook", {})
+        st.session_state["sheets"] = workbook_from_jsonable(payload)
+        st.session_state["shared_project_id"] = project_id
+        st.session_state["shared_last_loaded"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        st.session_state["shared_last_updated_by"] = rows[0].get("updated_by")
+        st.session_state["shared_last_updated_at"] = rows[0].get("updated_at")
+        return True, f"Loaded shared workbook '{project_id}'."
+    except Exception as exc:
+        return False, f"Load failed: {exc}"
+
+
+def save_shared_workbook(project_id=DEFAULT_PROJECT_ID):
+    client = get_supabase_client()
+    if client is None:
+        return False, "Supabase is not configured."
+
+    sheets = st.session_state.get("sheets", {})
+    if not sheets:
+        return False, "No workbook sheets are loaded."
+
+    payload = workbook_to_jsonable(sheets)
+    email = st.session_state.get("sb_user_email", "unknown")
+
+    try:
+        row = {
+            "project_id": project_id,
+            "workbook": payload,
+            "updated_by": email,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        client.table("shared_workbooks").upsert(row, on_conflict="project_id").execute()
+        st.session_state["shared_project_id"] = project_id
+        st.session_state["shared_last_saved"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return True, f"Saved shared workbook '{project_id}'."
+    except Exception as exc:
+        return False, f"Save failed: {exc}"
+
+
+def collaborative_mode_enabled():
+    return bool(st.session_state.get("sb_user_email")) and supabase_configured()
+
+
 # ============================================================
 # UI
 # ============================================================
 
 st.title("Spectrum Planner")
+
+if collaborative_mode_enabled():
+    st.success(f"Collaborative mode active — logged in as {st.session_state.get('sb_user_email')}. Use Save shared changes to publish edits.")
+else:
+    st.warning("Upload/download mode active. Log in through the sidebar to use the shared collaborative workbook.")
+
 st.caption("Presentation-safe version: no dashboard, Active filtering enforced, matching legend colors, horizontal frequency labels, Smart Planner in Controls.")
 st.warning("Important: Download a backup workbook before logging out. Session-only changes can be lost if the app closes or reloads.")
 
 with st.sidebar:
+    st.header("Login / Collaboration")
+
+    if not supabase_configured():
+        st.warning("Collaboration is not configured yet. Upload/download mode still works.")
+        with st.expander("Supabase setup SQL"):
+            st.markdown(ensure_shared_workbook_table_note())
+    else:
+        if "sb_user_email" not in st.session_state:
+            login_email = st.text_input("Email", key="login_email")
+            login_password = st.text_input("Password", type="password", key="login_password")
+
+            if st.button("Log in", use_container_width=True):
+                ok, msg = login_supabase(login_email, login_password)
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+        else:
+            st.success(f"Logged in: {st.session_state['sb_user_email']}")
+
+            if st.button("Log out", use_container_width=True):
+                logout_supabase()
+                st.rerun()
+
+            project_id = st.text_input(
+                "Shared workbook ID",
+                value=st.session_state.get("shared_project_id", DEFAULT_PROJECT_ID),
+                key="shared_project_id_input",
+            )
+
+            c_load, c_save = st.columns(2)
+            with c_load:
+                if st.button("Load shared", use_container_width=True):
+                    ok, msg = load_shared_workbook(project_id)
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+            with c_save:
+                if st.button("Save shared", use_container_width=True):
+                    ok, msg = save_shared_workbook(project_id)
+                    if ok:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+
+            if "shared_last_loaded" in st.session_state:
+                st.caption(f"Loaded: {st.session_state['shared_last_loaded']}")
+            if "shared_last_saved" in st.session_state:
+                st.caption(f"Saved: {st.session_state['shared_last_saved']}")
+            if st.session_state.get("shared_last_updated_by"):
+                st.caption(f"Last updated by: {st.session_state.get('shared_last_updated_by')}")
+
+    st.divider()
+
     st.header("Controls")
     uploaded = st.file_uploader("Upload allocation workbook or CSV", type=["xlsx", "csv"])
     show_inactive = st.checkbox("Show inactive frequencies", value=False, key="show_inactive_rows")
     dark = st.checkbox("Dark visuals", value=True)
     st.divider()
     st.caption("Inactive rows are excluded from visuals, conflicts, maps, and planner unless Show inactive is enabled.")
+
+    st.divider()
+    st.header("Visual Layering")
+    draw_mode = st.selectbox(
+        "Draw order",
+        [
+            "Lower power in front",
+            "Higher power in front",
+            "Original row order",
+        ],
+        index=0,
+        key="visual_draw_order",
+    )
+    high_power_alpha = st.slider(
+        "High-power background transparency",
+        min_value=0.15,
+        max_value=0.95,
+        value=0.35,
+        step=0.05,
+        key="high_power_alpha",
+    )
+    low_power_alpha = st.slider(
+        "Low-power foreground opacity",
+        min_value=0.30,
+        max_value=1.00,
+        value=0.95,
+        step=0.05,
+        key="low_power_alpha",
+    )
+
 
     st.divider()
     st.header("Backup / Restore")
@@ -1407,7 +1698,7 @@ if uploaded is not None:
     st.success(f"Loaded {len(st.session_state['sheets'])} workbook tab(s). Dashboard sheets are intentionally skipped.")
 
 if not st.session_state["sheets"]:
-    st.info("Upload your allocation workbook to begin.")
+    st.info("Log in and click Load shared, or upload a workbook to begin. After uploading, click Save shared in the sidebar to make it the working collaborative file.")
     st.stop()
 
 sheet_names = list(st.session_state["sheets"].keys())
@@ -1442,7 +1733,14 @@ c1, c2, c3 = st.columns([1, 1, 1])
 with c1:
     if st.button("💾 Save shared changes", type="primary", use_container_width=True):
         update_active_sheet_in_session(active_sheet, edited_df)
-        st.success("Saved changes in this session. Download a backup before logging out.")
+        msg = "Saved changes in this session."
+        if collaborative_mode_enabled():
+            ok, shared_msg = save_shared_workbook(st.session_state.get("shared_project_id_input", DEFAULT_PROJECT_ID))
+            if ok:
+                msg += " Also saved to the shared collaborative workbook."
+            else:
+                st.warning(shared_msg)
+        st.success(msg)
 
 with c2:
     xlsx_bytes = dataframe_to_xlsx(st.session_state["sheets"])
