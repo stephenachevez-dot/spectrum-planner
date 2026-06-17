@@ -1,7 +1,15 @@
-import streamlit as st
 st.set_page_config(page_title="Spectrum Planner", layout="wide")
 
+# - V15: Performance optimized workflow. No heavy recalculation while editing.
+# - V14: Adds new user sign-up account creation for Supabase Authentication.
+# - V13: Adds persistent login using browser cookies and Supabase session restore.
 # - V12: Adds Supabase login + shared collaborative workbook persistence.
+
+try:
+    from streamlit_cookies_manager import EncryptedCookieManager
+except Exception:
+    EncryptedCookieManager = None
+
 try:
     from supabase import create_client
 except Exception:
@@ -17,6 +25,7 @@ except Exception:
 import io
 import re
 import hashlib
+import time
 import json
 from datetime import datetime
 from pathlib import Path
@@ -1258,7 +1267,7 @@ def smart_full_deconflict(df: pd.DataFrame, day_start: float, day_end: float, ti
     2. Then run frequency deconfliction on remaining conflicts.
     """
 
-    starting_conflicts = len(detect_conflicts(df))
+    starting_conflicts = len(detect_conflicts_fast(df))
 
     time_df, time_moves = smart_time_deconflict(
         df,
@@ -1269,7 +1278,7 @@ def smart_full_deconflict(df: pd.DataFrame, day_start: float, day_end: float, ti
         max_passes=max_passes,
     )
 
-    after_time_conflicts = len(detect_conflicts(time_df))
+    after_time_conflicts = len(detect_conflicts_fast(time_df))
 
     freq_df, freq_moves = smart_frequency_deconflict(
         time_df,
@@ -1280,7 +1289,7 @@ def smart_full_deconflict(df: pd.DataFrame, day_start: float, day_end: float, ti
         max_passes=max_passes,
     )
 
-    final_conflicts = len(detect_conflicts(freq_df))
+    final_conflicts = len(detect_conflicts_fast(freq_df))
 
     if not time_moves.empty:
         time_moves = time_moves.copy()
@@ -1405,6 +1414,103 @@ def get_secret_value(*names, default=None):
     return default
 
 
+
+# ============================================================
+# V13 Persistent Login Helpers
+# ============================================================
+
+def get_cookie_password():
+    return str(get_secret_value("COOKIE_PASSWORD", "cookie.password", default="change-this-cookie-password-spectrum-planner"))
+
+
+def get_login_cookies():
+    if EncryptedCookieManager is None:
+        return None
+
+    if "login_cookies" in st.session_state:
+        return st.session_state["login_cookies"]
+
+    cookies = EncryptedCookieManager(
+        prefix="spectrum_planner/",
+        password=get_cookie_password(),
+    )
+    st.session_state["login_cookies"] = cookies
+    return cookies
+
+
+def cookies_ready_or_stop():
+    cookies = get_login_cookies()
+    if cookies is None:
+        return None
+
+    if not cookies.ready():
+        st.stop()
+
+    return cookies
+
+
+def save_login_cookie(email, access_token=None, refresh_token=None):
+    cookies = get_login_cookies()
+    if cookies is None:
+        return
+
+    cookies["remembered_email"] = str(email or "")
+
+    if access_token:
+        cookies["sb_access_token"] = str(access_token)
+
+    if refresh_token:
+        cookies["sb_refresh_token"] = str(refresh_token)
+
+    cookies.save()
+
+
+def clear_login_cookie():
+    cookies = get_login_cookies()
+    if cookies is None:
+        return
+
+    for key in ["remembered_email", "sb_access_token", "sb_refresh_token"]:
+        try:
+            del cookies[key]
+        except Exception:
+            pass
+
+    cookies.save()
+
+
+def restore_login_from_cookie():
+    if "sb_user_email" in st.session_state:
+        return True
+
+    cookies = get_login_cookies()
+    if cookies is None:
+        return False
+
+    if not cookies.ready():
+        st.stop()
+
+    access_token = cookies.get("sb_access_token")
+    refresh_token = cookies.get("sb_refresh_token")
+    remembered_email = cookies.get("remembered_email")
+
+    if not access_token or not refresh_token:
+        return False
+
+    client = get_supabase_client()
+    if client is None:
+        return False
+
+    try:
+        client.auth.set_session(access_token, refresh_token)
+        st.session_state["sb_user_email"] = remembered_email or "remembered_user"
+        st.session_state["sb_session_restored"] = True
+        return True
+    except Exception:
+        clear_login_cookie()
+        return False
+
+
 def supabase_configured():
     url = get_secret_value("SUPABASE_URL", "supabase.url")
     key = get_secret_value("SUPABASE_ANON_KEY", "supabase.anon_key")
@@ -1459,9 +1565,55 @@ def login_supabase(email, password):
         res = client.auth.sign_in_with_password({"email": email, "password": password})
         st.session_state["sb_user_email"] = email
         st.session_state["sb_session"] = res
-        return True, "Logged in."
+
+        access_token = None
+        refresh_token = None
+
+        try:
+            access_token = res.session.access_token
+            refresh_token = res.session.refresh_token
+        except Exception:
+            pass
+
+        save_login_cookie(email, access_token, refresh_token)
+
+        return True, "Logged in. Your login will stay active after refresh."
     except Exception as exc:
         return False, f"Login failed: {exc}"
+
+
+
+def signup_supabase(email, password):
+    client = get_supabase_client()
+    if client is None:
+        return False, "Supabase is not configured."
+
+    if not email or not password:
+        return False, "Email and password are required."
+
+    if len(password) < 6:
+        return False, "Password must be at least 6 characters."
+
+    try:
+        res = client.auth.sign_up({"email": email, "password": password})
+
+        # If email confirmation is disabled, Supabase can return a session immediately.
+        try:
+            if getattr(res, "session", None):
+                st.session_state["sb_user_email"] = email
+                st.session_state["sb_session"] = res
+                save_login_cookie(
+                    email,
+                    getattr(res.session, "access_token", None),
+                    getattr(res.session, "refresh_token", None),
+                )
+                return True, "Account created and logged in."
+        except Exception:
+            pass
+
+        return True, "Account created. If email confirmation is enabled, check your email before logging in."
+    except Exception as exc:
+        return False, f"Account creation failed: {exc}"
 
 
 def logout_supabase():
@@ -1472,7 +1624,9 @@ def logout_supabase():
     except Exception:
         pass
 
-    for key in ["sb_user_email", "sb_session"]:
+    clear_login_cookie()
+
+    for key in ["sb_user_email", "sb_session", "sb_session_restored"]:
         if key in st.session_state:
             del st.session_state[key]
 
@@ -1491,7 +1645,7 @@ create table if not exists shared_workbooks (
 ```
 
 Add `SUPABASE_URL` and `SUPABASE_ANON_KEY` to Streamlit secrets.
-Create login accounts under Supabase Authentication.
+Users can create accounts in the app. In Supabase Authentication settings, choose whether email confirmation is required.
 """
 
 
@@ -1550,6 +1704,183 @@ def collaborative_mode_enabled():
     return bool(st.session_state.get("sb_user_email")) and supabase_configured()
 
 
+
+# ============================================================
+# V15 Performance / Stability Helpers
+# ============================================================
+
+MAX_CONFLICTS_DISPLAY = 2500
+MAX_PLANNER_ROWS = 1200
+MAX_VISUAL_ROWS_WARNING = 800
+
+def recalc_start_end_fast(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Fast vectorized Start/End Frequency calculation.
+    This replaces slow row-by-row recalculation.
+    """
+    out = normalize_columns(df, add_missing=True)
+
+    center_col = find_col(out, ["Center Frequency (MHz)", "Center Frequency", "CenterF", "Frequency"])
+    bw_col = find_col(out, ["Bandwidth (MHz)", "Bandwidth", "BW"])
+    start_col = find_col(out, ["Start Frequency (MHz)", "Start Frequency", "StartF"])
+    end_col = find_col(out, ["End Frequency (MHz)", "End Frequency", "EndF"])
+
+    if center_col is None or bw_col is None:
+        return out
+
+    if start_col is None:
+        out["Start Frequency (MHz)"] = None
+        start_col = "Start Frequency (MHz)"
+
+    if end_col is None:
+        out["End Frequency (MHz)"] = None
+        end_col = "End Frequency (MHz)"
+
+    centers = pd.to_numeric(out[center_col], errors="coerce")
+    bws = pd.to_numeric(out[bw_col], errors="coerce")
+    valid = centers.notna() & bws.notna() & (bws > 0)
+
+    out.loc[valid, start_col] = (centers[valid] - bws[valid] / 2.0).round(6)
+    out.loc[valid, end_col] = (centers[valid] + bws[valid] / 2.0).round(6)
+
+    return normalize_columns(out, add_missing=True)
+
+
+def detect_conflicts_fast(df: pd.DataFrame, max_conflicts=MAX_CONFLICTS_DISPLAY):
+    """
+    Faster conflict detection:
+    - Active rows only.
+    - Sorts by frequency start.
+    - Stops after max_conflicts to prevent freezing.
+    """
+    working = active_only(df, show_inactive=False)
+
+    center_col = find_col(working, ["Center Frequency (MHz)", "Center Frequency", "CenterF", "Frequency"])
+    bw_col = find_col(working, ["Bandwidth (MHz)", "Bandwidth", "BW"])
+    start_time_col = find_col(working, ["Start Time", "StartTime", "Start"])
+    end_time_col = find_col(working, ["End Time", "EndTime", "End"])
+    equipment_col = find_col(working, ["Equipment"])
+    unit_col = find_col(working, ["Unit"])
+    tech_col = find_col(working, ["Tech"])
+
+    if center_col is None or bw_col is None or working.empty:
+        return pd.DataFrame()
+
+    records = []
+    for idx, row in working.iterrows():
+        center = to_float(row.get(center_col))
+        bw = to_float(row.get(bw_col))
+
+        if center is None or bw is None or bw <= 0:
+            continue
+
+        t1 = time_to_hours(row.get(start_time_col)) if start_time_col else None
+        t2 = time_to_hours(row.get(end_time_col)) if end_time_col else None
+
+        if t1 is None:
+            t1 = 0.0
+        if t2 is None or t2 <= t1:
+            t2 = t1 + 2.0
+
+        records.append(
+            {
+                "index": idx,
+                "row_number": int(idx) + 1,
+                "center": center,
+                "bw": bw,
+                "f1": center - bw / 2.0,
+                "f2": center + bw / 2.0,
+                "t1": t1,
+                "t2": t2,
+                "equipment": row.get(equipment_col, "") if equipment_col else "",
+                "unit": row.get(unit_col, "") if unit_col else "",
+                "tech": row.get(tech_col, "") if tech_col else "",
+            }
+        )
+
+    records = sorted(records, key=lambda r: r["f1"])
+    conflicts = []
+
+    for i, a in enumerate(records):
+        for b in records[i + 1:]:
+            if b["f1"] >= a["f2"]:
+                break
+
+            time_overlap = max(a["t1"], b["t1"]) < min(a["t2"], b["t2"])
+            if not time_overlap:
+                continue
+
+            conflicts.append(
+                {
+                    "Row A": a["row_number"],
+                    "Row B": b["row_number"],
+                    "Equipment A": a["equipment"],
+                    "Equipment B": b["equipment"],
+                    "Unit A": a["unit"],
+                    "Unit B": b["unit"],
+                    "Tech A": a["tech"],
+                    "Tech B": b["tech"],
+                    "Center A": a["center"],
+                    "Center B": b["center"],
+                    "Bandwidth A": a["bw"],
+                    "Bandwidth B": b["bw"],
+                    "Reason": "Frequency and time overlap",
+                }
+            )
+
+            if len(conflicts) >= max_conflicts:
+                conflicts.append(
+                    {
+                        "Row A": "",
+                        "Row B": "",
+                        "Equipment A": "",
+                        "Equipment B": "",
+                        "Unit A": "",
+                        "Unit B": "",
+                        "Tech A": "",
+                        "Tech B": "",
+                        "Center A": "",
+                        "Center B": "",
+                        "Bandwidth A": "",
+                        "Bandwidth B": "",
+                        "Reason": f"Stopped at {max_conflicts} conflicts to prevent app freeze. Filter to a smaller band/sheet or run planner in smaller sections.",
+                    }
+                )
+                return pd.DataFrame(conflicts)
+
+    return pd.DataFrame(conflicts)
+
+
+def sheet_state_key(sheet_name, suffix):
+    clean = re.sub(r"[^A-Za-z0-9_]+", "_", str(sheet_name))
+    return f"{clean}_{suffix}"
+
+
+def store_analysis(sheet_name, conflict_df):
+    st.session_state[sheet_state_key(sheet_name, "conflicts")] = conflict_df
+    st.session_state[sheet_state_key(sheet_name, "analysis_time")] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def get_stored_analysis(sheet_name):
+    return st.session_state.get(sheet_state_key(sheet_name, "conflicts"), pd.DataFrame())
+
+
+def clear_stored_analysis(sheet_name):
+    for suffix in ["conflicts", "analysis_time"]:
+        key = sheet_state_key(sheet_name, suffix)
+        if key in st.session_state:
+            del st.session_state[key]
+
+
+def store_visual_ready_sheet(sheet_name, df):
+    st.session_state[sheet_state_key(sheet_name, "visual_df")] = recalc_start_end_fast(df)
+    st.session_state[sheet_state_key(sheet_name, "visual_time")] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def get_visual_ready_sheet(sheet_name, fallback_df):
+    return st.session_state.get(sheet_state_key(sheet_name, "visual_df"), fallback_df)
+
+
 # ============================================================
 # UI
 # ============================================================
@@ -1566,6 +1897,7 @@ st.warning("Important: Download a backup workbook before logging out. Session-on
 
 with st.sidebar:
     st.header("Login / Collaboration")
+    st.caption("Login is remembered after page refresh when cookies are available.")
 
     if not supabase_configured():
         st.warning("Collaboration is not configured yet. Upload/download mode still works.")
@@ -1573,18 +1905,48 @@ with st.sidebar:
             st.markdown(ensure_shared_workbook_table_note())
     else:
         if "sb_user_email" not in st.session_state:
+            auth_mode = st.radio(
+                "Account option",
+                ["Log in", "Create new user"],
+                key="auth_mode",
+            )
+
             login_email = st.text_input("Email", key="login_email")
             login_password = st.text_input("Password", type="password", key="login_password")
 
-            if st.button("Log in", use_container_width=True):
-                ok, msg = login_supabase(login_email, login_password)
-                if ok:
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
+            if auth_mode == "Log in":
+                if st.button("Log in", use_container_width=True):
+                    ok, msg = login_supabase(login_email, login_password)
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+            else:
+                login_password_confirm = st.text_input(
+                    "Confirm password",
+                    type="password",
+                    key="login_password_confirm",
+                )
+
+                if st.button("Create account", use_container_width=True):
+                    if login_password != login_password_confirm:
+                        st.error("Passwords do not match.")
+                    else:
+                        ok, msg = signup_supabase(login_email, login_password)
+                        if ok:
+                            st.success(msg)
+                            if "sb_user_email" in st.session_state:
+                                st.rerun()
+                        else:
+                            st.error(msg)
+
+                st.caption("If Supabase email confirmation is enabled, users must confirm their email before logging in.")
         else:
             st.success(f"Logged in: {st.session_state['sb_user_email']}")
+            if st.session_state.get("sb_session_restored"):
+                st.caption("Session restored from browser cookie.")
 
             if st.button("Log out", use_container_width=True):
                 logout_supabase()
@@ -1629,6 +1991,13 @@ with st.sidebar:
     dark = st.checkbox("Dark visuals", value=True)
     st.divider()
     st.caption("Inactive rows are excluded from visuals, conflicts, maps, and planner unless Show inactive is enabled.")
+
+    st.divider()
+    st.header("Performance")
+    st.caption("Large workbook mode is enabled.")
+    st.caption("Edits do not trigger automatic conflict analysis or visual rebuilds.")
+    st.caption("Use the numbered workflow buttons after editing.")
+
 
     st.divider()
     st.header("Visual Layering")
@@ -1708,6 +2077,7 @@ current_df = st.session_state["sheets"][active_sheet].copy()
 current_df = normalize_columns(current_df, add_missing=True)
 current_df = recalc_start_end(current_df)
 
+st.info("Large sheet performance note: this version will not recalculate conflicts or visuals while you type. Use the Performance Workflow buttons below.")
 st.subheader("Shared allocation workbook")
 st.caption("Use Active to turn rows on/off. Use Locked to prevent the auto-planner from moving a frequency.")
 
@@ -1722,11 +2092,11 @@ edited_df = st.data_editor(
 )
 
 edited_df = normalize_columns(edited_df, add_missing=True)
-edited_df = recalc_start_end(edited_df)
 
-# V8 safety: keep the edited sheet synchronized in session on every rerun.
-# This prevents tab changes/reruns from losing edits during the same login session.
-update_active_sheet_in_session(active_sheet, edited_df)
+# V15 performance:
+# Do NOT recalculate Start/End Frequency automatically on every cell edit.
+# This prevents freezing when changing Bandwidth on large PCC 6 workbooks.
+# Use the buttons below to save, recalculate, analyze, or generate visuals.
 
 c1, c2, c3 = st.columns([1, 1, 1])
 
@@ -1771,13 +2141,54 @@ with c4:
         st.success("Recalculated Start/End Frequency from Center Frequency and Bandwidth.")
         st.rerun()
 
-operational_df = active_only(edited_df, show_inactive=show_inactive)
-conflict_df = detect_conflicts(edited_df)
+
+# ============================================================
+# Manual performance workflow
+# ============================================================
+
+st.subheader("Performance Workflow")
+st.caption("For large PCC 6 workbooks: edit first, then manually save, recalculate, analyze, and generate visuals.")
+
+w1, w2, w3, w4 = st.columns(4)
+
+with w1:
+    if st.button("1. Save edits", type="primary", use_container_width=True):
+        update_active_sheet_in_session(active_sheet, edited_df)
+        clear_stored_analysis(active_sheet)
+        st.success("Edits saved to session. Analysis cache cleared.")
+
+with w2:
+    if st.button("2. Recalculate frequencies", use_container_width=True):
+        recalculated = recalc_start_end_fast(edited_df)
+        update_active_sheet_in_session(active_sheet, recalculated)
+        clear_stored_analysis(active_sheet)
+        st.success("Start/End Frequency recalculated from Center Frequency and Bandwidth.")
+        st.rerun()
+
+with w3:
+    if st.button("3. Analyze conflicts", use_container_width=True):
+        with st.spinner("Analyzing conflicts..."):
+            analysis_df = recalc_start_end_fast(edited_df)
+            conflict_results = detect_conflicts_fast(analysis_df)
+            store_analysis(active_sheet, conflict_results)
+        st.success(f"Conflict analysis complete: {len(conflict_results)} rows.")
+
+with w4:
+    if st.button("4. Generate visuals", use_container_width=True):
+        store_visual_ready_sheet(active_sheet, edited_df)
+        st.success("Visuals updated from the current saved sheet.")
+
+visual_df = get_visual_ready_sheet(active_sheet, edited_df)
+conflict_df = get_stored_analysis(active_sheet)
+
+
+operational_df = active_only(visual_df, show_inactive=show_inactive)
+conflict_df = get_stored_analysis(active_sheet)
 
 m1, m2, m3 = st.columns(3)
 m1.metric("Active rows in visuals", len(operational_df))
 m2.metric("Inactive rows hidden", int((normalize_columns(edited_df)["Active"] == False).sum()))
-m3.metric("Equipment conflicts", len(conflict_df))
+m3.metric("Equipment conflicts", len(conflict_df) if isinstance(conflict_df, pd.DataFrame) and not conflict_df.empty else "Not analyzed")
 
 with st.expander("Extract / Export Visuals", expanded=False):
     st.caption("Export briefing visuals as PNG or one combined PDF. Exports use the active sheet and current Active filters.")
@@ -1785,7 +2196,7 @@ with st.expander("Extract / Export Visuals", expanded=False):
 
     with e1:
         if st.button("Prepare all visuals for PDF", use_container_width=True):
-            st.session_state["export_visual_figures"] = build_all_visuals_for_export(edited_df, dark=dark)
+            st.session_state["export_visual_figures"] = build_all_visuals_for_export(visual_df, dark=dark)
             st.success("All visuals prepared. Use the PDF download button.")
 
     with e2:
@@ -1874,6 +2285,9 @@ with st.sidebar.expander("Smart Planner", expanded=False):
     )
 
     if st.button("Run Smart Planner", type="primary", use_container_width=True):
+        if len(edited_df) > MAX_PLANNER_ROWS:
+            st.error(f"Planner stopped to prevent freezing: {len(edited_df)} rows loaded. Run planner by band/sheet or reduce below {MAX_PLANNER_ROWS} rows.")
+            st.stop()
         if planner_mode == "Auto deconflict by time":
             new_df, moves = smart_time_deconflict(
                 edited_df,
@@ -1888,7 +2302,7 @@ with st.sidebar.expander("Smart Planner", expanded=False):
                     {
                         "Planner Mode": "Time Only",
                         "Starting Conflicts": len(conflict_df),
-                        "Final Conflicts": len(detect_conflicts(new_df)),
+                        "Final Conflicts": len(detect_conflicts_fast(new_df)),
                         "Move Rows": len(moves),
                     }
                 ]
@@ -1908,7 +2322,7 @@ with st.sidebar.expander("Smart Planner", expanded=False):
                     {
                         "Planner Mode": "Frequency Only",
                         "Starting Conflicts": len(conflict_df),
-                        "Final Conflicts": len(detect_conflicts(new_df)),
+                        "Final Conflicts": len(detect_conflicts_fast(new_df)),
                         "Move Rows": len(moves),
                     }
                 ]
@@ -1995,7 +2409,7 @@ tabs = st.tabs(
 
 with tabs[0]:
     color_by = st.selectbox("Color boxes by", ["Tech", "Equipment", "Unit", "Sponsor"], index=0, key="tf_color")
-    fig, plotted, rows_drawn = time_frequency_chart(edited_df, color_by=color_by, dark=dark)
+    fig, plotted, rows_drawn = time_frequency_chart(visual_df, color_by=color_by, dark=dark)
     st.pyplot(fig, use_container_width=True)
     st.caption(f"Showing {len(plotted)} active row(s). Frequency labels are horizontal. High-power systems are transparent in the background; lower-power systems are drawn in front.")
     visual_download_button(
@@ -2007,7 +2421,7 @@ with tabs[0]:
 
 with tabs[1]:
     color_by = st.selectbox("Color boxes by", ["Tech", "Equipment", "Unit", "Sponsor"], index=0, key="power_color")
-    fig, plotted = power_chart(edited_df, color_by=color_by, dark=dark)
+    fig, plotted = power_chart(visual_df, color_by=color_by, dark=dark)
     st.pyplot(fig, use_container_width=True)
     st.caption(f"Showing {len(plotted)} active row(s). Legend colors match box colors. High-power systems are transparent in the background; lower-power systems are drawn in front.")
     visual_download_button(
@@ -2018,7 +2432,7 @@ with tabs[1]:
     )
 
 with tabs[2]:
-    fig, plotted, _ = time_frequency_chart(edited_df, color_by="Equipment", dark=dark, title="Time × Frequency — by Equipment")
+    fig, plotted, _ = time_frequency_chart(visual_df, color_by="Equipment", dark=dark, title="Time × Frequency — by Equipment")
     st.pyplot(fig, use_container_width=True)
     visual_download_button(
         fig,
@@ -2028,7 +2442,7 @@ with tabs[2]:
     )
 
 with tabs[3]:
-    fig, plotted, _ = time_frequency_chart(edited_df, color_by="Unit", dark=dark, title="Time × Frequency — by Unit")
+    fig, plotted, _ = time_frequency_chart(visual_df, color_by="Unit", dark=dark, title="Time × Frequency — by Unit")
     st.pyplot(fig, use_container_width=True)
     visual_download_button(
         fig,
@@ -2038,7 +2452,7 @@ with tabs[3]:
     )
 
 with tabs[4]:
-    fig, plotted, _ = time_frequency_chart(edited_df, color_by="Sponsor", dark=dark, title="Time × Frequency — by Sponsor")
+    fig, plotted, _ = time_frequency_chart(visual_df, color_by="Sponsor", dark=dark, title="Time × Frequency — by Sponsor")
     st.pyplot(fig, use_container_width=True)
     visual_download_button(
         fig,
