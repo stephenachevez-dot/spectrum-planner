@@ -1,3 +1,6 @@
+import streamlit as st
+st.set_page_config(page_title="Spectrum Planner", layout="wide")
+
 # - V15: Performance optimized workflow. No heavy recalculation while editing.
 # - V14: Adds new user sign-up account creation for Supabase Authentication.
 # - V13: Adds persistent login using browser cookies and Supabase session restore.
