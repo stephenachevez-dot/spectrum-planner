@@ -837,7 +837,7 @@ def power_chart(df, color_by="Equipment", dark=True, sheet_name=None):
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V18 Visual Label Toggle + Time Fix")
+st.title("Spectrum Planner")
 st.caption("Frequency label controls hide the MHz text inside the box only. Bars/boxes stay visible.")
 
 with st.sidebar:
