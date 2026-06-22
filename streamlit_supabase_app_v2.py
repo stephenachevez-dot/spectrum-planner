@@ -11,7 +11,7 @@ from matplotlib.patches import Rectangle
 st.set_page_config(page_title="Spectrum Planner V18", layout="wide")
 
 # ============================================================
-# Spectrum Planner V18 — Visual Time Fix + Frequency Label Controls
+# Spectrum Planner V18
 # ============================================================
 # Baseline: V17 Visual Frequency Controls
 #
