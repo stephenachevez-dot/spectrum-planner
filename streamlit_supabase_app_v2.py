@@ -8,7 +8,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
-st.set_page_config(page_title="Spectrum Planner V18 Visual Label Toggle + Time Fix", layout="wide")
+st.set_page_config(page_title="Spectrum Planner V18", layout="wide")
 
 # ============================================================
 # Spectrum Planner V18 — Visual Time Fix + Frequency Label Controls
