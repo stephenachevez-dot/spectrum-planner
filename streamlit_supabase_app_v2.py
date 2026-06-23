@@ -507,7 +507,7 @@ def time_debug_table(df):
     return pd.DataFrame(rows)
 
 # UI
-st.title('Spectrum Planner — V28 JSON Map Fix')
+st.title('Spectrum Planner — V28')
 st.caption('Fixes Supabase project save by removing NaN/Inf values before JSON upload.')
 with st.sidebar:
     st.header('Workbook'); uploaded=st.file_uploader('Upload allocation workbook or CSV',type=['xlsx','csv']); dark=st.checkbox('Dark visuals',value=False); st.checkbox('Show inactive rows in visuals',value=False,key='show_inactive_rows')
