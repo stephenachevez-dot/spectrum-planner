@@ -1,5 +1,6 @@
 import io
 import re
+import zipfile
 import hashlib
 from datetime import datetime
 
@@ -7,10 +8,8 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
-from matplotlib.backends.backend_pdf import PdfPages
-import zipfile
 
-st.set_page_config(page_title="Spectrum Planner V21 Export Draw Order", layout="wide")
+st.set_page_config(page_title="Spectrum Planner V23 Collaborative Fixed", layout="wide")
 
 APP_COLUMNS = [
     "Active", "Locked", "Start Time", "End Time", "Unit", "Sponsor", "Equipment", "Tech",
@@ -55,6 +54,11 @@ RENAME_MAP = {
 
 MAX_CONFLICTS_DISPLAY = 2500
 MAX_PLANNER_ROWS = 1200
+
+try:
+    from supabase import create_client
+except Exception:
+    create_client = None
 
 
 def key_name(value) -> str:
@@ -483,6 +487,78 @@ def load_file(uploaded_file):
     return sheets
 
 
+# Collaboration functions defined after helpers so recalc is available
+
+def supabase_configured():
+    return bool(st.secrets.get("SUPABASE_URL", "")) and bool(st.secrets.get("SUPABASE_ANON_KEY", "")) and create_client is not None
+
+
+@st.cache_resource(show_spinner=False)
+def get_supabase_client():
+    if not supabase_configured():
+        return None
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_ANON_KEY"])
+
+
+def workbook_to_jsonable(sheets):
+    payload = {}
+    for name, df in sheets.items():
+        clean = recalc_start_end_fast(df).copy()
+        payload[name] = {"columns": list(clean.columns), "records": clean.where(pd.notna(clean), None).to_dict(orient="records")}
+    return payload
+
+
+def workbook_from_jsonable(payload):
+    sheets = {}
+    for name, obj in payload.items():
+        records = obj.get("records", [])
+        columns = obj.get("columns", None)
+        df = pd.DataFrame(records)
+        if columns:
+            for col in columns:
+                if col not in df.columns:
+                    df[col] = None
+            df = df[columns]
+        sheets[name] = normalize_columns(df, add_missing=True)
+    return sheets
+
+
+def save_project(project_id, project_name, updated_by):
+    client = get_supabase_client()
+    if client is None:
+        return False, "Supabase is not configured. Add SUPABASE_URL and SUPABASE_ANON_KEY to Streamlit secrets."
+    if not st.session_state.get("sheets"):
+        return False, "No workbook is loaded."
+    row = {"project_id": project_id.strip(), "project_name": project_name.strip() or project_id.strip(), "workbook": workbook_to_jsonable(st.session_state["sheets"]), "updated_by": updated_by.strip() or "unknown", "updated_at": datetime.utcnow().isoformat()}
+    try:
+        client.table("spectrum_projects").upsert(row, on_conflict="project_id").execute()
+        return True, f"Saved project '{row['project_name']}'."
+    except Exception as exc:
+        return False, f"Save failed: {exc}"
+
+
+def load_project(project_id):
+    client = get_supabase_client()
+    if client is None:
+        return False, "Supabase is not configured."
+    try:
+        result = client.table("spectrum_projects").select("*").eq("project_id", project_id.strip()).limit(1).execute()
+        rows = result.data or []
+        if not rows:
+            return False, "Project not found."
+        row = rows[0]
+        st.session_state["sheets"] = workbook_from_jsonable(row.get("workbook", {}))
+        st.session_state["active_project_id"] = row.get("project_id")
+        st.session_state["active_project_name"] = row.get("project_name")
+        st.session_state["loaded_upload_sig"] = None
+        st.session_state["analysis_cache"] = {}
+        st.session_state["hidden_visual_labels"] = {}
+        st.session_state["visual_version"] = st.session_state.get("visual_version", 0) + 1
+        return True, f"Loaded project '{row.get('project_name') or row.get('project_id')}'. Last updated by {row.get('updated_by', 'unknown')}."
+    except Exception as exc:
+        return False, f"Load failed: {exc}"
+
+
 def frequency_display_value(value):
     val = to_float(value)
     if val is None:
@@ -542,7 +618,27 @@ def add_legend(ax, color_by, color_map, dark=True):
     plt.setp(legend.get_title(), color="white" if dark else "black", fontsize=9, fontweight="bold")
 
 
-def time_frequency_chart(df, color_by="Equipment", dark=True, title=None, sheet_name=None, label_preview=False, draw_order="High power in back", high_power_alpha=0.30, low_power_alpha=0.85):
+def sorted_for_draw_order(plot_df, power_col, draw_order):
+    if power_col is None or plot_df.empty:
+        return plot_df
+    temp = plot_df.copy()
+    temp["_draw_power"] = temp[power_col].apply(lambda x: to_float(x, 0.0))
+    if draw_order == "High power in back":
+        return temp.sort_values("_draw_power", ascending=False).drop(columns=["_draw_power"])
+    if draw_order == "Low power in back":
+        return temp.sort_values("_draw_power", ascending=True).drop(columns=["_draw_power"])
+    return plot_df
+
+
+def row_alpha(row, power_col, max_power, high_alpha, low_alpha):
+    if power_col is None:
+        return 0.80
+    power = to_float(row.get(power_col), 0.0)
+    ratio = max(0.0, min(power / max_power, 1.0)) if max_power else 0.0
+    return low_alpha + ratio * (high_alpha - low_alpha)
+
+
+def time_frequency_chart(df, color_by="Equipment", dark=True, title=None, sheet_name=None, label_preview=False, draw_order="High power in back", high_power_alpha=0.25, low_power_alpha=0.85):
     plot_df = active_only(df, show_inactive=st.session_state.get("show_inactive_rows", False))
     hidden_labels = set() if label_preview or not sheet_name else get_hidden_label_frequencies(sheet_name)
     color_by = color_by if color_by in plot_df.columns else pick_color_field(plot_df, color_by)
@@ -560,21 +656,8 @@ def time_frequency_chart(df, color_by="Equipment", dark=True, title=None, sheet_
     max_power = 1.0
     if power_col is not None and len(plot_df):
         max_power = max([to_float(v, 0.0) for v in plot_df[power_col].tolist()] + [1.0])
-
-    # Draw order control:
-    # - High power in back: draw strongest systems first with lower alpha, then lower power on top.
-    # - Normal workbook order: draw rows in the order they appear.
-    # - Low power in back: draw weakest first.
-    plot_rows = []
+    plot_df = sorted_for_draw_order(plot_df, power_col, draw_order)
     for _, row in plot_df.iterrows():
-        pwr = to_float(row.get(power_col), 0.0) if power_col else 0.0
-        plot_rows.append((pwr, row))
-    if draw_order == "High power in back":
-        plot_rows = sorted(plot_rows, key=lambda x: x[0], reverse=True)
-    elif draw_order == "Low power in back":
-        plot_rows = sorted(plot_rows, key=lambda x: x[0])
-
-    for power_sort_value, row in plot_rows:
         center = to_float(row.get(center_col)) if center_col else None
         bw = to_float(row.get(bw_col), 1.0) if bw_col else 1.0
         if center is None:
@@ -587,20 +670,11 @@ def time_frequency_chart(df, color_by="Equipment", dark=True, title=None, sheet_
         all_times.extend([start_time, end_time])
         group_label = label_value(row.get(color_by, "(blank)")) if color_by else "(blank)"
         color = color_map.get(group_label, stable_color(group_label))
-        power = to_float(row.get(power_col), 0.0) if power_col else 0.0
-        ratio = max(0.0, min(power / max_power, 1.0)) if max_power else 0.0
-        alpha = (high_power_alpha * ratio) + (low_power_alpha * (1.0 - ratio))
-        alpha = max(0.05, min(float(alpha), 1.0))
-        if draw_order == "High power in back":
-            zorder = 10 + int((1.0 - ratio) * 1000)
-        elif draw_order == "Low power in back":
-            zorder = 10 + int(ratio * 1000)
-        else:
-            zorder = 10 + rows_drawn
-        ax.add_patch(Rectangle((center - bw / 2.0, start_time), bw, end_time - start_time, facecolor=color, edgecolor="#0F172A", linewidth=0.9, alpha=alpha, zorder=zorder))
+        alpha = row_alpha(row, power_col, max_power, high_power_alpha, low_power_alpha)
+        ax.add_patch(Rectangle((center - bw / 2.0, start_time), bw, end_time - start_time, facecolor=color, edgecolor="#0F172A", linewidth=0.9, alpha=alpha))
         freq_label = frequency_display_value(center)
-        if freq_label not in hidden_labels and (len(plot_df) <= 160 or ratio <= 0.70):
-            ax.text(center, start_time + (end_time - start_time) / 2.0, f"{center:.3f} MHz", rotation=0, ha="center", va="center", fontsize=7, fontweight="bold", color="white", bbox=dict(boxstyle="round,pad=0.12", facecolor="#111827", edgecolor="none", alpha=0.55), clip_on=True, zorder=zorder + 1)
+        if freq_label not in hidden_labels and len(plot_df) <= 160:
+            ax.text(center, start_time + (end_time - start_time) / 2.0, f"{center:.3f} MHz", rotation=0, ha="center", va="center", fontsize=7, fontweight="bold", color="white", bbox=dict(boxstyle="round,pad=0.12", facecolor="#111827", edgecolor="none", alpha=0.55), clip_on=True)
         rows_drawn += 1
     ax.autoscale()
     if all_times:
@@ -618,7 +692,7 @@ def time_frequency_chart(df, color_by="Equipment", dark=True, title=None, sheet_
     return fig, plot_df, rows_drawn
 
 
-def power_chart(df, color_by="Equipment", dark=True, sheet_name=None):
+def power_chart(df, color_by="Equipment", dark=True, sheet_name=None, draw_order="High power in back", high_power_alpha=0.25, low_power_alpha=0.85):
     plot_df = active_only(df, show_inactive=st.session_state.get("show_inactive_rows", False))
     hidden_labels = set() if not sheet_name else get_hidden_label_frequencies(sheet_name)
     color_by = color_by if color_by in plot_df.columns else pick_color_field(plot_df, color_by)
@@ -629,6 +703,10 @@ def power_chart(df, color_by="Equipment", dark=True, sheet_name=None):
     fig, ax = plt.subplots(figsize=(16, 7))
     fig.patch.set_facecolor("#111827" if dark else "white")
     ax.set_facecolor("#111827" if dark else "white")
+    max_power = 1.0
+    if power_col is not None and len(plot_df):
+        max_power = max([to_float(v, 0.0) for v in plot_df[power_col].tolist()] + [1.0])
+    plot_df = sorted_for_draw_order(plot_df, power_col, draw_order)
     for _, row in plot_df.iterrows():
         center = to_float(row.get(center_col)) if center_col else None
         bw = to_float(row.get(bw_col), 1.0) if bw_col else 1.0
@@ -641,7 +719,8 @@ def power_chart(df, color_by="Equipment", dark=True, sheet_name=None):
             power = 1.0
         group_label = label_value(row.get(color_by, "(blank)")) if color_by else "(blank)"
         color = color_map.get(group_label, stable_color(group_label))
-        ax.add_patch(Rectangle((center - bw / 2.0, 0), bw, power, facecolor=color, edgecolor="#0F172A", linewidth=0.9, alpha=0.80))
+        alpha = row_alpha(row, power_col, max_power, high_power_alpha, low_power_alpha)
+        ax.add_patch(Rectangle((center - bw / 2.0, 0), bw, power, facecolor=color, edgecolor="#0F172A", linewidth=0.9, alpha=alpha))
         freq_label = frequency_display_value(center)
         if freq_label not in hidden_labels and len(plot_df) <= 160:
             ax.text(center, power / 2.0, f"{center:.3f} MHz", ha="center", va="center", fontsize=7, fontweight="bold", color="white", bbox=dict(boxstyle="round,pad=0.12", facecolor="#111827", edgecolor="none", alpha=0.55), clip_on=True)
@@ -670,14 +749,63 @@ def time_debug_table(df):
     return pd.DataFrame(rows)
 
 
-st.title("Spectrum Planner — V20 Checkbox Label Toggle Fix")
-st.caption("Adds visual extraction/export, high-power draw order controls, and transparency sliders. Label controls hide MHz text only; bars stay visible.")
+def fig_to_png_bytes(fig):
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
+    buf.seek(0)
+    return buf.read()
+
+
+def build_all_visual_figures(visual_df, dark, active_sheet, draw_order, high_power_alpha, low_power_alpha):
+    figs = {}
+    figs["time_frequency_by_equipment.png"] = time_frequency_chart(visual_df, "Equipment", dark, "Time × Frequency — by Equipment", active_sheet, False, draw_order, high_power_alpha, low_power_alpha)[0]
+    figs["power_view_by_equipment.png"] = power_chart(visual_df, "Equipment", dark, active_sheet, draw_order, high_power_alpha, low_power_alpha)[0]
+    figs["equipment_deconfliction.png"] = time_frequency_chart(visual_df, "Equipment", dark, "Equipment Deconfliction", active_sheet, False, draw_order, high_power_alpha, low_power_alpha)[0]
+    figs["unit_deconfliction.png"] = time_frequency_chart(visual_df, "Unit", dark, "Unit Deconfliction", active_sheet, False, draw_order, high_power_alpha, low_power_alpha)[0]
+    figs["sponsor_deconfliction.png"] = time_frequency_chart(visual_df, "Sponsor", dark, "Sponsor Deconfliction", active_sheet, False, draw_order, high_power_alpha, low_power_alpha)[0]
+    return figs
+
+
+def figures_to_zip(figs):
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, fig in figs.items():
+            zf.writestr(name, fig_to_png_bytes(fig))
+    out.seek(0)
+    return out.read()
+
+
+# ============================================================
+# App UI
+# ============================================================
+
+st.title("Spectrum Planner — V23")
+st.caption("Collaborative save/load projects, Smart Planner apply fix, label-only hiding, visual export, draw order, and transparency controls.")
 
 with st.sidebar:
     st.header("Workbook")
     uploaded = st.file_uploader("Upload allocation workbook or CSV", type=["xlsx", "csv"])
     show_inactive = st.checkbox("Show inactive rows in visuals", value=False, key="show_inactive_rows")
     dark = st.checkbox("Dark visuals", value=False)
+
+    st.divider()
+    st.header("Collaborative Projects")
+    st.caption("Configured" if supabase_configured() else "Supabase not configured. Local workbook mode is active.")
+    project_id_input = st.text_input("Project ID", value=st.session_state.get("active_project_id", "pcc6-working-project"))
+    project_name_input = st.text_input("Project name", value=st.session_state.get("active_project_name", "PCC6 Working Project"))
+    updated_by_input = st.text_input("Your name/email", value="")
+    pc1, pc2 = st.columns(2)
+    with pc1:
+        if st.button("Load Project", use_container_width=True):
+            ok, msg = load_project(project_id_input)
+            (st.success if ok else st.error)(msg)
+            if ok:
+                st.rerun()
+    with pc2:
+        if st.button("Save Project", type="primary", use_container_width=True):
+            ok, msg = save_project(project_id_input, project_name_input, updated_by_input)
+            (st.success if ok else st.error)(msg)
+
     st.divider()
     st.header("Planner Mode")
     planner_mode = st.radio("Planner mode", ["Auto deconflict by time", "Auto deconflict by frequency", "Run full smart deconfliction"], index=0)
@@ -691,13 +819,11 @@ with st.sidebar:
     freq_step = st.number_input("Frequency step MHz", value=1.0, min_value=0.001, step=0.5)
     guard = st.number_input("Guard MHz", value=0.0, min_value=0.0, step=0.1, key="guard_mhz")
     max_passes = st.number_input("Max passes", value=5, min_value=1, max_value=20, step=1)
-    st.caption("Locked rows will not be moved by the planner.")
 
 if "sheets" not in st.session_state:
     st.session_state["sheets"] = {}
 
-# V19 critical fix: only load the uploaded file once per unique file.
-# Without this, Streamlit reruns reload the original Excel and erase applied planner results.
+# Load uploaded file once per unique file so planner apply is not overwritten during reruns.
 if uploaded is not None:
     uploaded_bytes = uploaded.getvalue()
     upload_sig = hashlib.md5(uploaded_bytes).hexdigest()
@@ -712,11 +838,13 @@ if uploaded is not None:
         st.success(f"Loaded {len(st.session_state['sheets'])} workbook tab(s). Dashboard sheets are intentionally skipped.")
 
 if not st.session_state["sheets"]:
-    st.info("Upload a workbook or CSV to begin.")
+    st.info("Upload a workbook or load a collaborative project to begin.")
     st.stop()
 
 sheet_names = list(st.session_state["sheets"].keys())
 active_sheet = st.selectbox("Active sheet for plots/deconfliction", sheet_names)
+st.session_state["active_sheet"] = active_sheet
+
 current_df = recalc_start_end_fast(st.session_state["sheets"][active_sheet].copy())
 
 st.subheader("Shared allocation workbook")
@@ -729,7 +857,7 @@ edited_df = normalize_columns(edited_df, add_missing=True)
 c1, c2, c3 = st.columns(3)
 with c1:
     if st.button("💾 Save edits", type="primary", use_container_width=True):
-        saved = update_active_sheet_in_session(active_sheet, edited_df)
+        update_active_sheet_in_session(active_sheet, edited_df)
         clear_stored_analysis(active_sheet)
         st.success("Edits saved to session.")
 with c2:
@@ -747,7 +875,7 @@ st.subheader("Performance Workflow")
 w1, w2, w3, w4 = st.columns(4)
 with w1:
     if st.button("1. Save edits", type="primary", use_container_width=True):
-        saved = update_active_sheet_in_session(active_sheet, edited_df)
+        update_active_sheet_in_session(active_sheet, edited_df)
         clear_stored_analysis(active_sheet)
         st.success("Edits saved.")
 with w2:
@@ -839,51 +967,41 @@ visual_df = recalc_start_end_fast(st.session_state["sheets"][active_sheet].copy(
 
 st.divider()
 st.subheader("Frequency Label Controls")
-st.caption("Check the MHz labels you want to hide inside the boxes. The colored bars/boxes stay visible and workbook data is not changed.")
-
+st.caption("This hides/shows only the MHz label inside each box. The colored bars stay visible and workbook data is not changed.")
 frequency_options = visual_frequency_options(visual_df)
 hidden_now = get_hidden_label_frequencies(active_sheet)
-
-label_control_df = pd.DataFrame({
-    "Hide Label": [freq in hidden_now for freq in frequency_options],
-    "MHz Label": frequency_options,
-})
-
-edited_label_control_df = st.data_editor(
-    label_control_df,
-    use_container_width=True,
-    hide_index=True,
-    disabled=["MHz Label"],
-    column_config={
-        "Hide Label": st.column_config.CheckboxColumn(
-            "Hide Label",
-            help="Checked labels are hidden inside the visual boxes. Bars stay visible.",
-            default=False,
-        ),
-        "MHz Label": st.column_config.TextColumn("MHz Label"),
-    },
-    key=f"label_grid_{active_sheet}_{st.session_state.get('visual_version', 0)}",
-)
-
-lc1, lc2, lc3 = st.columns(3)
-with lc1:
-    if st.button("💾 Apply label visibility", type="primary", use_container_width=True):
-        selected_hidden = edited_label_control_df.loc[edited_label_control_df["Hide Label"] == True, "MHz Label"].tolist()
-        set_hidden_label_frequencies(active_sheet, selected_hidden)
-        st.success(f"Updated label visibility. Hidden labels: {len(selected_hidden)}. Bars/boxes stay visible.")
+visible_options = [f for f in frequency_options if f not in hidden_now]
+hidden_options = [f for f in frequency_options if f in hidden_now]
+fc1, fc2 = st.columns(2)
+with fc1:
+    st.markdown("**Frequency labels currently showing inside boxes**")
+    selected_hide = []
+    with st.container(border=True):
+        for label in visible_options:
+            if st.checkbox(label, value=False, key=f"hide_{active_sheet}_{label}_{st.session_state.get('visual_version', 0)}"):
+                selected_hide.append(label)
+    if st.button("➖ Hide selected MHz labels inside boxes", use_container_width=True):
+        set_hidden_label_frequencies(active_sheet, list(hidden_now.union(selected_hide)))
+        st.success(f"Hid {len(selected_hide)} selected MHz label(s). Bars stay visible.")
         st.rerun()
-with lc2:
-    if st.button("🙈 Hide all MHz labels", use_container_width=True):
-        set_hidden_label_frequencies(active_sheet, frequency_options)
-        st.success("All MHz labels are hidden. Bars/boxes stay visible.")
-        st.rerun()
-with lc3:
-    if st.button("👁️ Show all MHz labels", use_container_width=True):
-        set_hidden_label_frequencies(active_sheet, [])
-        st.success("All MHz labels are visible again.")
-        st.rerun()
-
-hidden_now = get_hidden_label_frequencies(active_sheet)
+with fc2:
+    st.markdown("**Frequency labels currently hidden inside boxes**")
+    selected_show = []
+    with st.container(border=True):
+        for label in hidden_options:
+            if st.checkbox(label, value=False, key=f"show_{active_sheet}_{label}_{st.session_state.get('visual_version', 0)}"):
+                selected_show.append(label)
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        if st.button("➕ Show selected labels", use_container_width=True):
+            set_hidden_label_frequencies(active_sheet, list(hidden_now.difference(selected_show)))
+            st.success(f"Showed {len(selected_show)} selected MHz label(s).")
+            st.rerun()
+    with sc2:
+        if st.button("♻️ Show all labels", use_container_width=True):
+            set_hidden_label_frequencies(active_sheet, [])
+            st.success("All MHz labels are visible again.")
+            st.rerun()
 if hidden_now:
     st.info(f"Hidden MHz labels on this sheet: {', '.join(sorted(hidden_now, key=lambda x: to_float(x, 0.0)))}")
 else:
@@ -891,82 +1009,37 @@ else:
 
 st.divider()
 with st.expander("Extract / Export Visuals", expanded=True):
-    st.markdown("**Draw order and transparency**")
+    st.subheader("Draw order and transparency")
     ec1, ec2, ec3 = st.columns(3)
     with ec1:
-        draw_order = st.selectbox(
-            "Draw order",
-            ["High power in back", "Normal workbook order", "Low power in back"],
-            index=0,
-            help="Use High power in back to place stronger/high-power systems behind the lower-power systems."
-        )
+        draw_order = st.selectbox("Draw order", ["High power in back", "Low power in back", "Workbook row order"], index=0)
     with ec2:
-        high_power_alpha = st.slider(
-            "High-power background transparency",
-            min_value=0.05,
-            max_value=1.00,
-            value=0.25,
-            step=0.05,
-            help="Lower value means high-power boxes are more transparent when drawn in the back."
-        )
+        high_power_alpha = st.slider("High-power background transparency", 0.05, 1.0, 0.25, 0.05)
     with ec3:
-        low_power_alpha = st.slider(
-            "Low-power foreground transparency",
-            min_value=0.05,
-            max_value=1.00,
-            value=0.85,
-            step=0.05,
-            help="Higher value keeps low-power boxes easier to see in front."
-        )
-    export_figs = build_all_visual_figures(visual_df, dark, active_sheet, draw_order, high_power_alpha, low_power_alpha)
-    ex1, ex2, ex3 = st.columns(3)
-    with ex1:
-        st.download_button(
-            "📷 Extract Time × Frequency PNG",
-            data=fig_to_png_bytes(export_figs[0][1]),
-            file_name=f"time_frequency_{active_sheet}_{timestamp_string()}.png",
-            mime="image/png",
-            use_container_width=True,
-        )
-    with ex2:
-        st.download_button(
-            "📄 Extract all visuals PDF",
-            data=build_visuals_pdf_bytes(export_figs),
-            file_name=f"spectrum_visuals_{active_sheet}_{timestamp_string()}.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
-    with ex3:
-        st.download_button(
-            "🗂️ Extract all visuals PNG ZIP",
-            data=build_visuals_zip_bytes(export_figs),
-            file_name=f"spectrum_visuals_{active_sheet}_{timestamp_string()}.zip",
-            mime="application/zip",
-            use_container_width=True,
-        )
-    for _, _fig in export_figs:
-        plt.close(_fig)
-
-    st.caption("High-power in back draws the strongest systems first and uses the high-power transparency slider. Lower-power systems are drawn later in the foreground.")
-
+        low_power_alpha = st.slider("Low-power foreground transparency", 0.05, 1.0, 0.85, 0.05)
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Time × Frequency", "Power View", "Equipment Deconfliction", "Unit Deconfliction", "Sponsor Deconfliction", "Conflict Tables", "Time Debug"])
     with tab1:
         color_by = st.selectbox("Color boxes by", ["Equipment", "Tech", "Unit", "Sponsor", "Tech Category"], index=0)
         fig, plot_df, rows_drawn = time_frequency_chart(visual_df, color_by=color_by, dark=dark, sheet_name=active_sheet, draw_order=draw_order, high_power_alpha=high_power_alpha, low_power_alpha=low_power_alpha)
         st.pyplot(fig, use_container_width=True)
+        st.download_button("Download this visual PNG", data=fig_to_png_bytes(fig), file_name=f"time_frequency_{timestamp_string()}.png", mime="image/png", use_container_width=True)
         st.caption(f"Showing {rows_drawn} active row(s). Hidden MHz labels: {len(hidden_now)}. Bars/boxes stay visible.")
     with tab2:
-        pfig, _ = power_chart(visual_df, color_by="Equipment", dark=dark, sheet_name=active_sheet)
+        pfig, _ = power_chart(visual_df, color_by="Equipment", dark=dark, sheet_name=active_sheet, draw_order=draw_order, high_power_alpha=high_power_alpha, low_power_alpha=low_power_alpha)
         st.pyplot(pfig, use_container_width=True)
+        st.download_button("Download this visual PNG", data=fig_to_png_bytes(pfig), file_name=f"power_view_{timestamp_string()}.png", mime="image/png", use_container_width=True)
     with tab3:
         fig, _, _ = time_frequency_chart(visual_df, color_by="Equipment", dark=dark, title="Equipment Deconfliction", sheet_name=active_sheet, draw_order=draw_order, high_power_alpha=high_power_alpha, low_power_alpha=low_power_alpha)
         st.pyplot(fig, use_container_width=True)
+        st.download_button("Download this visual PNG", data=fig_to_png_bytes(fig), file_name=f"equipment_deconfliction_{timestamp_string()}.png", mime="image/png", use_container_width=True)
     with tab4:
         fig, _, _ = time_frequency_chart(visual_df, color_by="Unit", dark=dark, title="Unit Deconfliction", sheet_name=active_sheet, draw_order=draw_order, high_power_alpha=high_power_alpha, low_power_alpha=low_power_alpha)
         st.pyplot(fig, use_container_width=True)
+        st.download_button("Download this visual PNG", data=fig_to_png_bytes(fig), file_name=f"unit_deconfliction_{timestamp_string()}.png", mime="image/png", use_container_width=True)
     with tab5:
         fig, _, _ = time_frequency_chart(visual_df, color_by="Sponsor", dark=dark, title="Sponsor Deconfliction", sheet_name=active_sheet, draw_order=draw_order, high_power_alpha=high_power_alpha, low_power_alpha=low_power_alpha)
         st.pyplot(fig, use_container_width=True)
+        st.download_button("Download this visual PNG", data=fig_to_png_bytes(fig), file_name=f"sponsor_deconfliction_{timestamp_string()}.png", mime="image/png", use_container_width=True)
     with tab6:
         latest_conflicts = detect_conflicts_fast(visual_df, guard_mhz=guard)
         store_analysis(active_sheet, latest_conflicts)
@@ -978,5 +1051,12 @@ with st.expander("Extract / Export Visuals", expanded=True):
         debug_df = time_debug_table(visual_df)
         st.dataframe(debug_df, use_container_width=True, hide_index=True)
         st.download_button("Download time debug CSV", data=debug_df.to_csv(index=False).encode("utf-8"), file_name=f"time_debug_{timestamp_string()}.csv", mime="text/csv", use_container_width=True)
+    st.divider()
+    if st.button("Build all visuals ZIP", type="primary", use_container_width=True):
+        export_figs = build_all_visual_figures(visual_df, dark, active_sheet, draw_order, high_power_alpha, low_power_alpha)
+        st.session_state["visuals_zip_bytes"] = figures_to_zip(export_figs)
+        st.success("Visual export bundle is ready.")
+    if "visuals_zip_bytes" in st.session_state:
+        st.download_button("Download all visuals ZIP", data=st.session_state["visuals_zip_bytes"], file_name=f"spectrum_visuals_{active_sheet}_{timestamp_string()}.zip", mime="application/zip", use_container_width=True)
 
-st.caption("V21 note: export buttons create PNG/PDF/ZIP visuals. High-power systems can be drawn behind lower-power systems with adjustable transparency.")
+st.caption("V23 note: export code runs only after active_sheet is selected, preventing the active_sheet NameError.")
