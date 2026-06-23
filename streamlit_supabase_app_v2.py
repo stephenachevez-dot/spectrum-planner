@@ -899,4 +899,4 @@ with st.expander("Extract / Export Visuals", expanded=True):
         st.dataframe(debug_df, use_container_width=True, hide_index=True)
         st.download_button("Download time debug CSV", data=debug_df.to_csv(index=False).encode("utf-8"), file_name=f"time_debug_{timestamp_string()}.csv", mime="text/csv", use_container_width=True)
 
-st.caption("V20 note: label ontrols use checkboxes instead of dropdown multiselect. Upload is loaded only once per unique file, so Apply Planner Results is not wiped out by Streamlit reruns.")
+st.caption("V20 note: label controls use checkboxes instead of dropdown multiselect. Upload is loaded only once per unique file, so Apply Planner Results is not wiped out by Streamlit reruns.")
