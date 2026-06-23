@@ -456,7 +456,7 @@ def choose_label_rotation(mode,bw,idx,gap):
     if mode=='Staggered': return 90 if idx%2 else 0
     return 90 if bw<8 or gap<7 else 0
 
-def time_frequency_chart(df,color_by='Equipment',dark=True,title=None,sheet_name=None,label_preview=False,draw_order='High power in back',high_power_alpha=.95,low_power_alpha=.95,label_mode='vertical'):
+def time_frequency_chart(df,color_by='Equipment',dark=True,title=None,sheet_name=None,label_preview=False,draw_order='High power in back',high_power_alpha=.95,low_power_alpha=.95,label_mode='Horizontal'):
     plot_df=active_only(df,st.session_state.get('show_inactive_rows',False)); hidden=set() if label_preview or not sheet_name else get_hidden_label_frequencies(sheet_name)
     color_by=color_by if color_by in plot_df.columns else pick_color_field(plot_df,color_by); cmap=build_color_map(plot_df,color_by)
     center=find_col(plot_df,['Center Frequency (MHz)','Center Frequency','CenterF','Frequency']); bwc=find_col(plot_df,['Bandwidth (MHz)','Bandwidth','BW']); stc=find_col(plot_df,['Start Time','StartTime','Start']); enc=find_col(plot_df,['End Time','EndTime','End']); powerc=find_col(plot_df,['Power (W)','PowerW','Power'])
@@ -481,7 +481,7 @@ def time_frequency_chart(df,color_by='Equipment',dark=True,title=None,sheet_name
     ax.set_title(title or f'Time × Frequency — by {color_by}',color='white' if dark else 'black',fontsize=15,fontweight='bold'); ax.set_xlabel('Frequency (MHz)',color='white' if dark else 'black'); ax.set_ylabel('Time (hours)',color='white' if dark else 'black'); ax.tick_params(colors='white' if dark else 'black'); ax.grid(True,alpha=.18); add_legend(ax,color_by,cmap,dark); fig.tight_layout()
     return fig,plot_df,rows
 
-def power_chart(df,color_by='Equipment',dark=True,sheet_name=None,draw_order='High power in back',high_power_alpha=.25,low_power_alpha=.85,label_mode='Auto'):
+def power_chart(df,color_by='Equipment',dark=True,sheet_name=None,draw_order='High power in back',high_power_alpha=.95,low_power_alpha=.95,label_mode='Horizontal'):
     plot_df=active_only(df,st.session_state.get('show_inactive_rows',False)); hidden=set() if not sheet_name else get_hidden_label_frequencies(sheet_name)
     color_by=color_by if color_by in plot_df.columns else pick_color_field(plot_df,color_by); cmap=build_color_map(plot_df,color_by)
     center=find_col(plot_df,['Center Frequency (MHz)','Center Frequency','CenterF','Frequency']); bwc=find_col(plot_df,['Bandwidth (MHz)','Bandwidth','BW']); powerc=find_col(plot_df,['Power (W)','PowerW','Power'])
