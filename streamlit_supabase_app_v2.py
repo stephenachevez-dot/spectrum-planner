@@ -918,7 +918,6 @@ with st.expander("Extract / Export Visuals", expanded=True):
             step=0.05,
             help="Higher value keeps low-power boxes easier to see in front."
         )
-
     export_figs = build_all_visual_figures(visual_df, dark, active_sheet, draw_order, high_power_alpha, low_power_alpha)
     ex1, ex2, ex3 = st.columns(3)
     with ex1:
