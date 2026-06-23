@@ -168,7 +168,13 @@ def workbook_to_jsonable(sheets):
     for name,df in sheets.items():
         clean=recalc_start_end_fast(df).copy()
         for c in clean.columns: clean[c]=clean[c].apply(to_json_safe)
-        payload[name]={'columns':list(clean.columns),'records':clean.applymap(to_json_safe).to_dict(orient='records')}
+        
+        # V28 fix: pandas 3 removed DataFrame.applymap(); use DataFrame.map when available.
+        if hasattr(clean, 'map'):
+            clean_json = clean.map(to_json_safe)
+        else:
+            clean_json = clean.applymap(to_json_safe)
+        payload[name]={'columns':list(clean.columns),'records':clean_json.to_dict(orient='records')}
     return payload
 
 def workbook_from_jsonable(payload):
@@ -446,7 +452,7 @@ def time_debug_table(df):
     return pd.DataFrame(rows)
 
 # UI
-st.title('Spectrum Planner — V27 Label Orientation')
+st.title('Spectrum Planner — V28')
 st.caption('Adds Auto / Horizontal / Vertical / Staggered MHz label orientation to reduce label crowding.')
 with st.sidebar:
     st.header('Workbook'); uploaded=st.file_uploader('Upload allocation workbook or CSV',type=['xlsx','csv']); dark=st.checkbox('Dark visuals',value=False); st.checkbox('Show inactive rows in visuals',value=False,key='show_inactive_rows')
