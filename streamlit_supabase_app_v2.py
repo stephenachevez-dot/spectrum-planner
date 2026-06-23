@@ -603,9 +603,9 @@ st.divider()
 with st.expander('Extract / Export Visuals',expanded=True):
     st.subheader('Draw order, transparency, and label orientation'); ec1,ec2,ec3,ec4=st.columns(4)
     with ec1: draw_order=st.selectbox('Draw order',['High power in back','Low power in back','Workbook row order'],index=0)
-    with ec2: high_alpha=st.slider('High-power background transparency',0.05,1.0,0.25,0.05)
-    with ec3: low_alpha=st.slider('Low-power foreground transparency',0.05,1.0,0.85,0.05)
-    with ec4: label_mode=st.selectbox('MHz label orientation',['Auto','Horizontal','Vertical','Staggered'],index=0)
+    with ec2: high_alpha=st.slider('High-power background transparency',0.05,1.0,0.95,0.05)
+    with ec3: low_alpha=st.slider('Low-power foreground transparency',0.05,1.0,0.95,0.05)
+    with ec4: label_mode=st.selectbox('MHz label orientation',['Horizontal','Vertical','Staggered'Auto',],index=0)
     tab1,tab2,tab3,tab4,tab5,tab6,tab7=st.tabs(['Time × Frequency','Power View','Equipment Deconfliction','Unit Deconfliction','Sponsor Deconfliction','Conflict Tables','Time Debug'])
     with tab1:
         color_by=st.selectbox('Color boxes by',['Equipment','Tech','Unit','Sponsor','Tech Category'],index=0); fig,_,rows=time_frequency_chart(visual_df,color_by=color_by,dark=dark,sheet_name=active_sheet,draw_order=draw_order,high_power_alpha=high_alpha,low_power_alpha=low_alpha,label_mode=label_mode); st.pyplot(fig,use_container_width=True); png=fig_to_png_bytes(fig); st.download_button('Download this visual PNG',data=png,file_name=f'time_frequency_{timestamp_string()}.png',mime='image/png',use_container_width=True)
