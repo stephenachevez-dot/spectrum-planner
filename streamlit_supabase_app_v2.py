@@ -1,4 +1,4 @@
-import io, re, hashlib, base64, math
+import io, re, hashlib, base64, math, json
 from datetime import datetime, date, time
 import pandas as pd
 import streamlit as st
@@ -105,17 +105,33 @@ def frequency_display_value(v):
     return f'{val:.3f} MHz' if val is not None else None
 
 def to_json_safe(x):
-    # Supabase/PostgREST JSON cannot store NaN, Infinity, pandas NA, or raw Excel time/date objects.
+    """Return a value that is safe for strict JSON/Supabase jsonb.
+    Handles NaN/Inf, pandas NA/NaT, Excel time/date objects, dicts, lists, and numpy scalars.
+    """
     if x is None:
         return None
+
+    # Recursively clean containers first.
+    if isinstance(x, dict):
+        return {str(k): to_json_safe(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple, set)):
+        return [to_json_safe(v) for v in x]
+
+    # pandas/numpy missing values, including NaN and NaT
     try:
         if pd.isna(x):
             return None
     except Exception:
         pass
-    if isinstance(x, float):
-        if math.isnan(x) or math.isinf(x):
+
+    # Python and numpy floating values.
+    try:
+        if isinstance(x, float) and (math.isnan(x) or math.isinf(x)):
             return None
+    except Exception:
+        pass
+
+    # Datetime/date/time values from Excel/openpyxl/pandas.
     if isinstance(x, (pd.Timestamp, datetime, date, time)):
         return x.isoformat()
     if hasattr(x, 'isoformat'):
@@ -123,7 +139,27 @@ def to_json_safe(x):
             return x.isoformat()
         except Exception:
             pass
+
+    # Convert numpy scalar types to normal Python scalar types.
+    if hasattr(x, 'item'):
+        try:
+            return to_json_safe(x.item())
+        except Exception:
+            pass
+
     return x
+
+def json_strict_sanitize(obj):
+    """Clean and validate JSON. Any remaining invalid float is converted to None."""
+    clean = to_json_safe(obj)
+    try:
+        json.dumps(clean, allow_nan=False)
+        return clean
+    except ValueError:
+        # Final defensive pass through JSON text after replacing non-compliant constants.
+        text = json.dumps(clean, allow_nan=True)
+        text = text.replace('NaN', 'null').replace('Infinity', 'null').replace('-Infinity', 'null')
+        return json.loads(text)
 
 def recalc_start_end_fast(df):
     out=normalize_columns(df,True)
@@ -164,18 +200,23 @@ def get_supabase_client():
     return create_client(st.secrets['SUPABASE_URL'],st.secrets['SUPABASE_ANON_KEY']) if supabase_configured() else None
 
 def workbook_to_jsonable(sheets):
-    payload={}
-    for name,df in sheets.items():
-        clean=recalc_start_end_fast(df).copy()
-        for c in clean.columns: clean[c]=clean[c].apply(to_json_safe)
-        
-        # V28 fix: pandas 3 removed DataFrame.applymap(); use DataFrame.map when available.
-        if hasattr(clean, 'map'):
-            clean_json = clean.map(to_json_safe)
-        else:
-            clean_json = clean.applymap(to_json_safe)
-        payload[name]={'columns':list(clean.columns),'records':clean_json.to_dict(orient='records')}
-    return payload
+    payload = {}
+    for name, df in sheets.items():
+        clean = recalc_start_end_fast(df).copy()
+
+        # Critical fix: cast to object BEFORE replacing missing values.
+        # Otherwise float columns convert None back to NaN.
+        clean = clean.astype(object)
+        records = []
+        for rec in clean.to_dict(orient='records'):
+            records.append(json_strict_sanitize(rec))
+
+        payload[str(name)] = {
+            'columns': [str(c) for c in clean.columns],
+            'records': records,
+        }
+
+    return json_strict_sanitize(payload)
 
 def workbook_from_jsonable(payload):
     sheets={}
@@ -191,11 +232,25 @@ def workbook_from_jsonable(payload):
 def save_project(project_id,project_name,updated_by):
     client=get_supabase_client()
     if client is None: return False,'Supabase is not configured.'
-    if not st.session_state.get('sheets'): return False,'No workbook is loaded.'
-    row={'project_id':project_id.strip(),'project_name':project_name.strip() or project_id.strip(),'workbook':workbook_to_jsonable(st.session_state['sheets']),'png_exports':st.session_state.get('saved_png_exports',{}),'updated_by':updated_by.strip() or 'unknown','updated_at':datetime.utcnow().isoformat()}
+    if not st.session_state.get('sheets'): return False,'No workbook loaded.'
+
+    row = {
+        'project_id': project_id.strip(),
+        'project_name': project_name.strip() or project_id.strip(),
+        'workbook': workbook_to_jsonable(st.session_state['sheets']),
+        'png_exports': json_strict_sanitize(st.session_state.get('saved_png_exports', {})),
+        'updated_by': updated_by.strip() or 'unknown',
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    row = json_strict_sanitize(row)
+
     try:
-        client.table('spectrum_projects').upsert(row,on_conflict='project_id').execute(); return True,f"Saved project '{row['project_name']}'."
-    except Exception as e: return False,f'Save failed: {e}'
+        # Last validation before Supabase. If this fails, it will be caught below.
+        json.dumps(row, allow_nan=False)
+        client.table('spectrum_projects').upsert(row,on_conflict='project_id').execute()
+        return True,f"Saved project '{row['project_name']}'."
+    except Exception as e:
+        return False,f'Save failed: {e}'
 
 def load_project(project_id):
     client=get_supabase_client()
@@ -452,8 +507,8 @@ def time_debug_table(df):
     return pd.DataFrame(rows)
 
 # UI
-st.title('Spectrum Planner — V28')
-st.caption('Adds Auto / Horizontal / Vertical / Staggered MHz label orientation to reduce label crowding.')
+st.title('Spectrum Planner — V28 JSON Map Fix')
+st.caption('Fixes Supabase project save by removing NaN/Inf values before JSON upload.')
 with st.sidebar:
     st.header('Workbook'); uploaded=st.file_uploader('Upload allocation workbook or CSV',type=['xlsx','csv']); dark=st.checkbox('Dark visuals',value=False); st.checkbox('Show inactive rows in visuals',value=False,key='show_inactive_rows')
     st.divider(); st.header('Collaborative Projects'); st.caption('Supabase configured.' if supabase_configured() else 'Supabase not configured. Local mode is active.')
