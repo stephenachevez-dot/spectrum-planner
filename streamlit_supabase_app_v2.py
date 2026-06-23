@@ -1,11 +1,11 @@
-import io, re, hashlib, base64
+import io, re, hashlib, base64, math
 from datetime import datetime, date, time
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
-st.set_page_config(page_title='Spectrum Planner V26 Label Orientation', layout='wide')
+st.set_page_config(page_title='Spectrum Planner V27 Label Orientation', layout='wide')
 
 APP_COLUMNS=['Active','Locked','Start Time','End Time','Unit','Sponsor','Equipment','Tech','Start Frequency (MHz)','Center Frequency (MHz)','End Frequency (MHz)','Bandwidth (MHz)','Power (W)','Power (dBm)','Tech Category','Latitude','Longitude','Location','System/Platform','Antenna Height','Coverage Radius','Site Name','MGRS','USNG','Notes']
 PALETTE=['#2563EB','#F97316','#22C55E','#EAB308','#A855F7','#EF4444','#06B6D4','#84CC16','#EC4899','#8B5CF6','#14B8A6','#F59E0B','#0EA5E9','#F43F5E','#64748B','#6366F1','#15803D','#C2410C','#A16207','#7C3AED','#0F766E','#B45309','#0369A1','#BE185D','#334155']
@@ -105,13 +105,24 @@ def frequency_display_value(v):
     return f'{val:.3f} MHz' if val is not None else None
 
 def to_json_safe(x):
-    if isinstance(x,(pd.Timestamp,datetime,date,time)): return x.isoformat()
-    if hasattr(x,'isoformat'):
-        try: return x.isoformat()
-        except Exception: pass
+    # Supabase/PostgREST JSON cannot store NaN, Infinity, pandas NA, or raw Excel time/date objects.
+    if x is None:
+        return None
     try:
-        if pd.isna(x): return None
-    except Exception: pass
+        if pd.isna(x):
+            return None
+    except Exception:
+        pass
+    if isinstance(x, float):
+        if math.isnan(x) or math.isinf(x):
+            return None
+    if isinstance(x, (pd.Timestamp, datetime, date, time)):
+        return x.isoformat()
+    if hasattr(x, 'isoformat'):
+        try:
+            return x.isoformat()
+        except Exception:
+            pass
     return x
 
 def recalc_start_end_fast(df):
@@ -157,7 +168,7 @@ def workbook_to_jsonable(sheets):
     for name,df in sheets.items():
         clean=recalc_start_end_fast(df).copy()
         for c in clean.columns: clean[c]=clean[c].apply(to_json_safe)
-        payload[name]={'columns':list(clean.columns),'records':clean.where(pd.notna(clean),None).to_dict(orient='records')}
+        payload[name]={'columns':list(clean.columns),'records':clean.applymap(to_json_safe).to_dict(orient='records')}
     return payload
 
 def workbook_from_jsonable(payload):
@@ -435,7 +446,7 @@ def time_debug_table(df):
     return pd.DataFrame(rows)
 
 # UI
-st.title('Spectrum Planner — V26')
+st.title('Spectrum Planner — V27 Label Orientation')
 st.caption('Adds Auto / Horizontal / Vertical / Staggered MHz label orientation to reduce label crowding.')
 with st.sidebar:
     st.header('Workbook'); uploaded=st.file_uploader('Upload allocation workbook or CSV',type=['xlsx','csv']); dark=st.checkbox('Dark visuals',value=False); st.checkbox('Show inactive rows in visuals',value=False,key='show_inactive_rows')
@@ -553,4 +564,4 @@ with st.expander('Extract / Export Visuals',expanded=True):
     if st.session_state.get('saved_png_exports'):
         st.subheader('Saved PNGs in project memory')
         for name,b64 in st.session_state['saved_png_exports'].items(): st.download_button(f'Download saved {name}',data=base64.b64decode(b64.encode()),file_name=name,mime='image/png',use_container_width=True)
-st.caption('V26: Auto rotates crowded MHz labels vertical; Staggered alternates horizontal and vertical.')
+st.caption('V27: Auto rotates crowded MHz labels vertical; Staggered alternates horizontal and vertical.')
