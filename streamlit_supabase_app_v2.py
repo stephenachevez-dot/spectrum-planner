@@ -5,7 +5,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
-st.set_page_config(page_title='Spectrum Planner V27 Label Orientation', layout='wide')
+st.set_page_config(page_title='Spectrum Planner V28', layout='wide')
 
 APP_COLUMNS=['Active','Locked','Start Time','End Time','Unit','Sponsor','Equipment','Tech','Start Frequency (MHz)','Center Frequency (MHz)','End Frequency (MHz)','Bandwidth (MHz)','Power (W)','Power (dBm)','Tech Category','Latitude','Longitude','Location','System/Platform','Antenna Height','Coverage Radius','Site Name','MGRS','USNG','Notes']
 PALETTE=['#2563EB','#F97316','#22C55E','#EAB308','#A855F7','#EF4444','#06B6D4','#84CC16','#EC4899','#8B5CF6','#14B8A6','#F59E0B','#0EA5E9','#F43F5E','#64748B','#6366F1','#15803D','#C2410C','#A16207','#7C3AED','#0F766E','#B45309','#0369A1','#BE185D','#334155']
@@ -456,7 +456,7 @@ def choose_label_rotation(mode,bw,idx,gap):
     if mode=='Staggered': return 90 if idx%2 else 0
     return 90 if bw<8 or gap<7 else 0
 
-def time_frequency_chart(df,color_by='Equipment',dark=True,title=None,sheet_name=None,label_preview=False,draw_order='High power in back',high_power_alpha=.95,low_power_alpha=.95,label_mode='Auto'):
+def time_frequency_chart(df,color_by='Equipment',dark=True,title=None,sheet_name=None,label_preview=False,draw_order='High power in back',high_power_alpha=.95,low_power_alpha=.95,label_mode='vertical'):
     plot_df=active_only(df,st.session_state.get('show_inactive_rows',False)); hidden=set() if label_preview or not sheet_name else get_hidden_label_frequencies(sheet_name)
     color_by=color_by if color_by in plot_df.columns else pick_color_field(plot_df,color_by); cmap=build_color_map(plot_df,color_by)
     center=find_col(plot_df,['Center Frequency (MHz)','Center Frequency','CenterF','Frequency']); bwc=find_col(plot_df,['Bandwidth (MHz)','Bandwidth','BW']); stc=find_col(plot_df,['Start Time','StartTime','Start']); enc=find_col(plot_df,['End Time','EndTime','End']); powerc=find_col(plot_df,['Power (W)','PowerW','Power'])
