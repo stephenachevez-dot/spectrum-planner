@@ -5,7 +5,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
-st.set_page_config(page_title='Spectrum Planner V27 Label Orientation', layout='wide')
+st.set_page_config(page_title='Spectrum Planner V27', layout='wide')
 
 APP_COLUMNS=['Active','Locked','Start Time','End Time','Unit','Sponsor','Equipment','Tech','Start Frequency (MHz)','Center Frequency (MHz)','End Frequency (MHz)','Bandwidth (MHz)','Power (W)','Power (dBm)','Tech Category','Latitude','Longitude','Location','System/Platform','Antenna Height','Coverage Radius','Site Name','MGRS','USNG','Notes']
 PALETTE=['#2563EB','#F97316','#22C55E','#EAB308','#A855F7','#EF4444','#06B6D4','#84CC16','#EC4899','#8B5CF6','#14B8A6','#F59E0B','#0EA5E9','#F43F5E','#64748B','#6366F1','#15803D','#C2410C','#A16207','#7C3AED','#0F766E','#B45309','#0369A1','#BE185D','#334155']
@@ -544,7 +544,7 @@ def time_debug_table(df):
     return pd.DataFrame(rows)
 
 # UI
-st.title('Spectrum Planner — V30 Saved Projects Dropdown')
+st.title('Spectrum Planner — V30')
 st.caption('Adds a Saved Projects dropdown, Refresh Saved Projects, Load Selected Project, and Duplicate Current Project as New Day.')
 with st.sidebar:
     st.header('Workbook'); uploaded=st.file_uploader('Upload allocation workbook or CSV',type=['xlsx','csv']); dark=st.checkbox('Dark visuals',value=False); st.checkbox('Show inactive rows in visuals',value=False,key='show_inactive_rows')
