@@ -5,7 +5,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
-st.set_page_config(page_title='Spectrum Planner V28', layout='wide')
+st.set_page_config(page_title='Spectrum Planner V27 Label Orientation', layout='wide')
 
 APP_COLUMNS=['Active','Locked','Start Time','End Time','Unit','Sponsor','Equipment','Tech','Start Frequency (MHz)','Center Frequency (MHz)','End Frequency (MHz)','Bandwidth (MHz)','Power (W)','Power (dBm)','Tech Category','Latitude','Longitude','Location','System/Platform','Antenna Height','Coverage Radius','Site Name','MGRS','USNG','Notes']
 PALETTE=['#2563EB','#F97316','#22C55E','#EAB308','#A855F7','#EF4444','#06B6D4','#84CC16','#EC4899','#8B5CF6','#14B8A6','#F59E0B','#0EA5E9','#F43F5E','#64748B','#6366F1','#15803D','#C2410C','#A16207','#7C3AED','#0F766E','#B45309','#0369A1','#BE185D','#334155']
@@ -266,6 +266,43 @@ def load_project(project_id):
         return True,f"Loaded project '{row.get('project_name') or row.get('project_id')}'."
     except Exception as e: return False,f'Load failed: {e}'
 
+
+def list_saved_projects():
+    """Return saved Supabase projects for the dropdown."""
+    client=get_supabase_client()
+    if client is None:
+        return False,'Supabase is not configured.',[]
+    try:
+        r=client.table('spectrum_projects').select('project_id,project_name,updated_by,updated_at').order('updated_at',desc=True).limit(500).execute()
+        rows=r.data or []
+        return True,f'Found {len(rows)} saved project(s).',rows
+    except Exception as e:
+        return False,f'Could not list projects: {e}',[]
+
+
+def project_display_name(row):
+    pid=str(row.get('project_id','')).strip()
+    pname=str(row.get('project_name') or pid).strip()
+    updated=str(row.get('updated_at') or '').replace('T',' ')[:19]
+    by=str(row.get('updated_by') or '').strip()
+    suffix=f' — {updated}' if updated else ''
+    if by:
+        suffix += f' by {by}'
+    return f'{pname} ({pid}){suffix}'
+
+
+def refresh_saved_projects_to_session():
+    ok,msg,rows=list_saved_projects()
+    if ok:
+        st.session_state['saved_project_rows']=rows
+    return ok,msg,rows
+
+
+def duplicate_current_project_as(project_id,project_name,updated_by):
+    if not st.session_state.get('sheets'):
+        return False,'No workbook is loaded to duplicate.'
+    return save_project(project_id,project_name,updated_by)
+
 # Conflicts/planner
 
 def detect_conflicts_fast(df,max_conflicts=2500,guard_mhz=0.0):
@@ -456,7 +493,7 @@ def choose_label_rotation(mode,bw,idx,gap):
     if mode=='Staggered': return 90 if idx%2 else 0
     return 90 if bw<8 or gap<7 else 0
 
-def time_frequency_chart(df,color_by='Equipment',dark=True,title=None,sheet_name=None,label_preview=False,draw_order='High power in back',high_power_alpha=.95,low_power_alpha=.95,label_mode='Horizontal'):
+def time_frequency_chart(df,color_by='Equipment',dark=True,title=None,sheet_name=None,label_preview=False,draw_order='High power in back',high_power_alpha=.25,low_power_alpha=.85,label_mode='Auto'):
     plot_df=active_only(df,st.session_state.get('show_inactive_rows',False)); hidden=set() if label_preview or not sheet_name else get_hidden_label_frequencies(sheet_name)
     color_by=color_by if color_by in plot_df.columns else pick_color_field(plot_df,color_by); cmap=build_color_map(plot_df,color_by)
     center=find_col(plot_df,['Center Frequency (MHz)','Center Frequency','CenterF','Frequency']); bwc=find_col(plot_df,['Bandwidth (MHz)','Bandwidth','BW']); stc=find_col(plot_df,['Start Time','StartTime','Start']); enc=find_col(plot_df,['End Time','EndTime','End']); powerc=find_col(plot_df,['Power (W)','PowerW','Power'])
@@ -481,7 +518,7 @@ def time_frequency_chart(df,color_by='Equipment',dark=True,title=None,sheet_name
     ax.set_title(title or f'Time × Frequency — by {color_by}',color='white' if dark else 'black',fontsize=15,fontweight='bold'); ax.set_xlabel('Frequency (MHz)',color='white' if dark else 'black'); ax.set_ylabel('Time (hours)',color='white' if dark else 'black'); ax.tick_params(colors='white' if dark else 'black'); ax.grid(True,alpha=.18); add_legend(ax,color_by,cmap,dark); fig.tight_layout()
     return fig,plot_df,rows
 
-def power_chart(df,color_by='Equipment',dark=True,sheet_name=None,draw_order='High power in back',high_power_alpha=.95,low_power_alpha=.95,label_mode='Horizontal'):
+def power_chart(df,color_by='Equipment',dark=True,sheet_name=None,draw_order='High power in back',high_power_alpha=.25,low_power_alpha=.85,label_mode='Auto'):
     plot_df=active_only(df,st.session_state.get('show_inactive_rows',False)); hidden=set() if not sheet_name else get_hidden_label_frequencies(sheet_name)
     color_by=color_by if color_by in plot_df.columns else pick_color_field(plot_df,color_by); cmap=build_color_map(plot_df,color_by)
     center=find_col(plot_df,['Center Frequency (MHz)','Center Frequency','CenterF','Frequency']); bwc=find_col(plot_df,['Bandwidth (MHz)','Bandwidth','BW']); powerc=find_col(plot_df,['Power (W)','PowerW','Power'])
@@ -507,20 +544,45 @@ def time_debug_table(df):
     return pd.DataFrame(rows)
 
 # UI
-st.title('Spectrum Planner — V28')
-st.caption('Fixes Supabase project save by removing NaN/Inf values before JSON upload.')
+st.title('Spectrum Planner — V30 Saved Projects Dropdown')
+st.caption('Adds a Saved Projects dropdown, Refresh Saved Projects, Load Selected Project, and Duplicate Current Project as New Day.')
 with st.sidebar:
     st.header('Workbook'); uploaded=st.file_uploader('Upload allocation workbook or CSV',type=['xlsx','csv']); dark=st.checkbox('Dark visuals',value=False); st.checkbox('Show inactive rows in visuals',value=False,key='show_inactive_rows')
     st.divider(); st.header('Collaborative Projects'); st.caption('Supabase configured.' if supabase_configured() else 'Supabase not configured. Local mode is active.')
-    project_id_input=st.text_input('Project ID',value=st.session_state.get('active_project_id','pcc6-working-project')); project_name_input=st.text_input('Project name',value=st.session_state.get('active_project_name','PCC6 Working Project')); updated_by_input=st.text_input('Your name/email',value='')
+    project_id_input=st.text_input('Project ID',value=st.session_state.get('active_project_id','pcc6-working-project'))
+    project_name_input=st.text_input('Project name',value=st.session_state.get('active_project_name','PCC6 Working Project'))
+    updated_by_input=st.text_input('Your name/email',value='')
+
     pc1,pc2=st.columns(2)
     with pc1:
-        if st.button('Load Project',use_container_width=True):
-            ok,msg=load_project(project_id_input); (st.success if ok else st.error)(msg); 
-            if ok: st.rerun()
+        if st.button('Refresh Saved Projects',use_container_width=True):
+            ok,msg,_=refresh_saved_projects_to_session(); (st.success if ok else st.error)(msg)
     with pc2:
-        if st.button('Save Project',type='primary',use_container_width=True):
+        if st.button('Save Current Project',type='primary',use_container_width=True):
             ok,msg=save_project(project_id_input,project_name_input,updated_by_input); (st.success if ok else st.error)(msg)
+            if ok: refresh_saved_projects_to_session()
+
+    saved_rows=st.session_state.get('saved_project_rows',[])
+    if not saved_rows and supabase_configured():
+        ok,msg,rows=refresh_saved_projects_to_session(); saved_rows=rows if ok else []
+
+    if saved_rows:
+        selected_project=st.selectbox('Saved Projects',options=saved_rows,format_func=project_display_name,key='saved_project_dropdown')
+        if st.button('Load Selected Project',use_container_width=True):
+            ok,msg=load_project(selected_project.get('project_id','')); (st.success if ok else st.error)(msg)
+            if ok: st.rerun()
+    else:
+        st.caption('No saved projects loaded yet. Click Refresh Saved Projects after saving at least one project.')
+
+    with st.expander('Duplicate Current Project as New Day',expanded=False):
+        dup_day=st.text_input('Day label',value='Day-01')
+        default_dup_id=f"{project_id_input}-{dup_day}".replace(' ','-')
+        dup_project_id=st.text_input('New day project ID',value=default_dup_id)
+        dup_project_name=st.text_input('New day project name',value=f"{project_name_input} {dup_day}")
+        if st.button('Duplicate as New Day Project',use_container_width=True):
+            ok,msg=duplicate_current_project_as(dup_project_id,dup_project_name,updated_by_input); (st.success if ok else st.error)(msg)
+            if ok: refresh_saved_projects_to_session()
+
     st.divider(); st.header('Planner Mode'); planner_mode=st.radio('Planner mode',['Auto deconflict by time','Auto deconflict by frequency','Run full smart deconfliction'],index=0)
     st.subheader('Time settings'); day_start=st.number_input('Operating day start hour',value=6.0,min_value=0.0,max_value=24.0,step=.25); day_end=st.number_input('Operating day end hour',value=20.0,min_value=0.0,max_value=24.0,step=.25); time_step=st.number_input('Time step minutes',value=30,min_value=1,max_value=240,step=5)
     st.subheader('Frequency settings'); low=st.number_input('Search low MHz',value=2200.0,step=1.0); high=st.number_input('Search high MHz',value=2300.0,step=1.0); freq_step=st.number_input('Frequency step MHz',value=1.0,min_value=.001,step=.5); guard=st.number_input('Guard MHz',value=0.0,min_value=0.0,step=.1,key='guard_mhz'); max_passes=st.number_input('Max passes',value=5,min_value=1,max_value=20,step=1)
@@ -605,7 +667,7 @@ with st.expander('Extract / Export Visuals',expanded=True):
     with ec1: draw_order=st.selectbox('Draw order',['High power in back','Low power in back','Workbook row order'],index=0)
     with ec2: high_alpha=st.slider('High-power background transparency',0.05,1.0,0.95,0.05)
     with ec3: low_alpha=st.slider('Low-power foreground transparency',0.05,1.0,0.95,0.05)
-    with ec4: label_mode=st.selectbox('MHz label orientation',['Horizontal','Vertical','Staggered','Auto'],index=0)
+    with ec4: label_mode=st.selectbox('MHz label orientation',['Auto','Horizontal','Vertical','Staggered'],index=0)
     tab1,tab2,tab3,tab4,tab5,tab6,tab7=st.tabs(['Time × Frequency','Power View','Equipment Deconfliction','Unit Deconfliction','Sponsor Deconfliction','Conflict Tables','Time Debug'])
     with tab1:
         color_by=st.selectbox('Color boxes by',['Equipment','Tech','Unit','Sponsor','Tech Category'],index=0); fig,_,rows=time_frequency_chart(visual_df,color_by=color_by,dark=dark,sheet_name=active_sheet,draw_order=draw_order,high_power_alpha=high_alpha,low_power_alpha=low_alpha,label_mode=label_mode); st.pyplot(fig,use_container_width=True); png=fig_to_png_bytes(fig); st.download_button('Download this visual PNG',data=png,file_name=f'time_frequency_{timestamp_string()}.png',mime='image/png',use_container_width=True)
