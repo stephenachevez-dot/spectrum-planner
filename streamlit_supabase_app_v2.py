@@ -1095,11 +1095,262 @@ def render_pydeck_map(df, color_by="Equipment", radius_units="meters", max_rows=
     st.caption(f"Map rows displayed: {len(map_df)}. Use No basemap if your network blocks map tiles.")
     return map_df
 
+
+# ============================================================
+# V35 Tactical Map Full Controls
+# ============================================================
+
+def band_label(center_mhz):
+    f = to_float(center_mhz)
+    if f is None:
+        return "Unknown"
+    if f < 300:
+        return "VHF"
+    if f < 1000:
+        return "UHF"
+    if 1000 <= f < 2000:
+        return "L-Band"
+    if 2000 <= f < 4000:
+        return "S-Band"
+    if 4000 <= f < 8000:
+        return "C-Band"
+    return "High Band"
+
+
+def band_color(center_mhz):
+    colors = {
+        "VHF": "#2563EB",
+        "UHF": "#16A34A",
+        "L-Band": "#F59E0B",
+        "S-Band": "#DC2626",
+        "C-Band": "#7C3AED",
+        "High Band": "#0891B2",
+        "Unknown": "#64748B",
+    }
+    return colors.get(band_label(center_mhz), "#64748B")
+
+
+def tactical_marker(unit, equipment):
+    text = f"{unit} {equipment}".upper()
+    if any(k in text for k in ["UAS", "DRONE", "RQ", "VBAT"]):
+        return "^"
+    if any(k in text for k in ["TRILOS", "GDLT", "LINK", "RELAY"]):
+        return "s"
+    if any(k in text for k in ["MPU", "PRC", "RADIO"]):
+        return "o"
+    return "D"
+
+
+def build_time_filtered_df(df, selected_hour=None, show_all_hours=True):
+    if show_all_hours or selected_hour is None:
+        return df
+    working = recalc_start_end_fast(df).copy()
+    start_col = find_col(working, ["Start Time", "StartTime", "Start"])
+    end_col = find_col(working, ["End Time", "EndTime", "End"])
+    keep = []
+    for _, row in working.iterrows():
+        t1, t2 = row_window(row, start_col, end_col)
+        keep.append(t1 <= selected_hour < t2)
+    return working[pd.Series(keep, index=working.index)].copy()
+
+
+def circles_overlap_v35(row_a, row_b):
+    lat1, lon1, r1 = row_a["lat"], row_a["lon"], to_float(row_a.get("radius_m"), 0.0)
+    lat2, lon2, r2 = row_b["lat"], row_b["lon"], to_float(row_b.get("radius_m"), 0.0)
+    if r1 <= 0 or r2 <= 0:
+        return False
+    mean_lat = math.radians((lat1 + lat2) / 2.0)
+    dx = (lon2 - lon1) * 111320.0 * math.cos(mean_lat)
+    dy = (lat2 - lat1) * 111320.0
+    dist = math.sqrt(dx * dx + dy * dy)
+    return dist <= (r1 + r2)
+
+
+def build_map_df_v35(df, color_by="Equipment", radius_units="meters", max_rows=300, selected_hour=None, show_all_hours=True):
+    filtered = build_time_filtered_df(df, selected_hour=selected_hour, show_all_hours=show_all_hours)
+    out = build_map_df(filtered, color_by=color_by, radius_units=radius_units, max_rows=max_rows)
+    if not out.empty:
+        out["Band"] = out["Center MHz"].apply(band_label)
+        out["Band_Color"] = out["Center MHz"].apply(band_color)
+    return out
+
+
+def tactical_ops_map_v35(
+    map_df,
+    map_layer="Offline Grid",
+    show_radius=True,
+    show_labels=True,
+    show_unit_icons=True,
+    color_mode="Frequency Band",
+    show_overlap_warning=True,
+    show_congestion_heat=True,
+    show_grid=True,
+    selected_hour=None,
+    show_all_hours=True,
+    map_theme="Light",
+):
+    dark = map_theme == "Dark"
+    fig, ax = plt.subplots(figsize=(15, 9))
+    fig.patch.set_facecolor("#0B1120" if dark else "white")
+    ax.set_facecolor("#111827" if dark else "#F8FAFC")
+
+    if map_df.empty:
+        ax.text(0.5, 0.5, "No valid Latitude/Longitude rows available for the tactical map.", ha="center", va="center", color="white" if dark else "black")
+        ax.axis("off")
+        return fig
+
+    working = map_df.copy()
+    if "Band" not in working.columns:
+        working["Band"] = working["Center MHz"].apply(band_label)
+
+    min_lat, max_lat = working["lat"].min(), working["lat"].max()
+    min_lon, max_lon = working["lon"].min(), working["lon"].max()
+    lat_span = max(max_lat - min_lat, 0.01)
+    lon_span = max(max_lon - min_lon, 0.01)
+
+    # Offline map layer appearance. Street/Satellite/Topo are fallback renderings that do not need internet tiles.
+    layer_note = ""
+    if map_layer == "Offline Grid":
+        ax.set_facecolor("#0F172A" if dark else "#F8FAFC")
+        layer_note = "Offline grid; no external tiles."
+    elif map_layer == "Street Map":
+        ax.set_facecolor("#E0F2FE" if not dark else "#172554")
+        layer_note = "Street-map style fallback; true street tiles require external access."
+        ax.text(0.5, 0.96, "STREET MAP MODE — OFFLINE FALLBACK", transform=ax.transAxes, ha="center", fontsize=9, alpha=0.70, color="white" if dark else "#111827")
+    elif map_layer == "Satellite":
+        ax.set_facecolor("#1F2937")
+        layer_note = "Satellite-style fallback; true imagery requires external access."
+        ax.text(0.5, 0.96, "SATELLITE MODE — OFFLINE FALLBACK", transform=ax.transAxes, ha="center", fontsize=9, alpha=0.80, color="white")
+    elif map_layer == "Military Topographic":
+        ax.set_facecolor("#ECFCCB" if not dark else "#1A2E05")
+        layer_note = "Topo-style fallback; true elevation requires DEM/DTED."
+        for i in range(8):
+            y = min_lat - lat_span * 0.25 + (i + 1) * (lat_span * 1.5 / 9)
+            ax.plot([min_lon - lon_span, max_lon + lon_span], [y, y + 0.04 * lat_span * math.sin(i)], color="#64748B", alpha=0.28, linewidth=0.9, zorder=0)
+        ax.text(0.5, 0.96, "MILITARY TOPO MODE — OFFLINE FALLBACK", transform=ax.transAxes, ha="center", fontsize=9, alpha=0.80, color="white" if dark else "#111827")
+
+    if show_congestion_heat and len(working) >= 2:
+        try:
+            ax.hexbin(working["lon"], working["lat"], gridsize=18, cmap="Reds", alpha=0.25 if not dark else 0.36, mincnt=1, zorder=1)
+        except Exception:
+            pass
+
+    overlap_count = 0
+    if show_overlap_warning and show_radius:
+        rows = list(working.to_dict(orient="records"))
+        for i in range(len(rows)):
+            for j in range(i + 1, len(rows)):
+                ca = to_float(rows[i].get("Center MHz"))
+                cb = to_float(rows[j].get("Center MHz"))
+                freq_close = ca is not None and cb is not None and abs(ca - cb) <= 10.0
+                if freq_close and circles_overlap_v35(rows[i], rows[j]):
+                    overlap_count += 1
+                    if overlap_count <= 300:
+                        ax.plot([rows[i]["lon"], rows[j]["lon"]], [rows[i]["lat"], rows[j]["lat"]], color="#DC2626", linewidth=1.25, alpha=0.55, zorder=2)
+
+    for _, row in working.iterrows():
+        lat = row["lat"]
+        lon = row["lon"]
+        radius_m = to_float(row.get("radius_m"), 0.0)
+
+        if color_mode == "Frequency Band":
+            color = band_color(row.get("Center MHz"))
+        elif color_mode == "Unit":
+            color = stable_color(row.get("Unit", ""))
+        elif color_mode == "Sponsor":
+            color = stable_color(row.get("Sponsor", ""))
+        elif color_mode == "Tech":
+            color = stable_color(row.get("Tech", ""))
+        else:
+            color = row.get("color_hex", stable_color(row.get("Equipment", "")))
+
+        if show_radius and radius_m > 0:
+            r_lat = radius_to_degrees_lat(radius_m)
+            denom = 111320.0 * max(math.cos(math.radians(lat)), 0.15)
+            r_lon = radius_m / denom
+            r = max(r_lat, r_lon)
+            ax.add_patch(Circle((lon, lat), radius=r, facecolor=color, edgecolor=color, linewidth=1.0, alpha=0.14 if not dark else 0.22, zorder=3))
+
+        marker = tactical_marker(row.get("Unit", ""), row.get("Equipment", "")) if show_unit_icons else "o"
+        power = max(to_float(row.get("Power_W"), 1.0), 1.0)
+        size = 70 + min(power, 50) * 3.5
+
+        ax.scatter(lon, lat, s=size, marker=marker, c=color, edgecolors="black" if not dark else "white", linewidths=0.85, alpha=0.96, zorder=5)
+
+        if show_labels:
+            equip = str(row.get("Equipment", ""))[:16]
+            unit = str(row.get("Unit", ""))[:10]
+            freq = row.get("Center MHz")
+            band = band_label(freq)
+            freq_txt = f"{freq:.1f}" if isinstance(freq, (int, float)) and not math.isnan(freq) else ""
+            label = f"{unit}\n{equip}\n{freq_txt} MHz {band}".strip()
+            ax.text(lon, lat, label, fontsize=7, ha="left", va="bottom", color="white" if dark else "#111827", bbox=dict(boxstyle="round,pad=0.18", facecolor="#111827" if not dark else "#020617", edgecolor="none", alpha=0.60), zorder=6)
+
+    pad_lat = max(lat_span * 0.25, 0.01)
+    pad_lon = max(lon_span * 0.25, 0.01)
+    ax.set_xlim(min_lon - pad_lon, max_lon + pad_lon)
+    ax.set_ylim(min_lat - pad_lat, max_lat + pad_lat)
+
+    if show_grid:
+        ax.grid(True, alpha=0.35 if not dark else 0.22, linestyle="--")
+    else:
+        ax.grid(False)
+
+    time_note = "All hours" if show_all_hours else f"{selected_hour:0.2f} hour"
+    ax.set_title(f"V35 Tactical Map — {map_layer} — {time_note}", fontsize=15, fontweight="bold", color="white" if dark else "black")
+    ax.set_xlabel("Longitude", color="white" if dark else "black")
+    ax.set_ylabel("Latitude", color="white" if dark else "black")
+    ax.tick_params(colors="white" if dark else "black")
+
+    band_list = ", ".join(sorted(working["Band"].dropna().unique()))
+    summary_text = (
+        f"Rows: {len(working)} | Bands: {band_list}\n"
+        f"Overlap warning links: {overlap_count} | Layer: {layer_note}\n"
+        "Markers: ○ Radio / △ UAS / □ Link-Relay / ◆ Other"
+    )
+    ax.text(0.01, 0.01, summary_text, transform=ax.transAxes, fontsize=8, color="white" if dark else "#111827", bbox=dict(boxstyle="round,pad=0.25", facecolor="#020617" if dark else "white", edgecolor="#64748B", alpha=0.80), zorder=10)
+
+    ax.text(0.99, 0.01, "LOS/Terrain: requires DEM/DTED\nControls included; true LOS is future upgrade", transform=ax.transAxes, fontsize=8, ha="right", va="bottom", color="white" if dark else "#111827", bbox=dict(boxstyle="round,pad=0.25", facecolor="#7F1D1D" if dark else "#FEE2E2", edgecolor="#DC2626", alpha=0.72), zorder=10)
+
+    fig.tight_layout()
+    return fig
+
+
+def build_animation_frames_pngs(source_df, hours, map_options):
+    exports = {}
+    for hour in hours:
+        frame_map_df = build_map_df_v35(
+            source_df,
+            color_by=map_options["map_color_by"],
+            radius_units=map_options["radius_units"],
+            max_rows=map_options["max_map_rows"],
+            selected_hour=hour,
+            show_all_hours=False,
+        )
+        fig = tactical_ops_map_v35(
+            frame_map_df,
+            map_layer=map_options["map_layer"],
+            show_radius=map_options["show_radius"],
+            show_labels=map_options["show_labels"],
+            show_unit_icons=map_options["show_unit_icons"],
+            color_mode=map_options["color_mode"],
+            show_overlap_warning=map_options["show_overlap_warning"],
+            show_congestion_heat=map_options["show_congestion_heat"],
+            show_grid=map_options["show_grid"],
+            selected_hour=hour,
+            show_all_hours=False,
+            map_theme=map_options["map_theme"],
+        )
+        exports[f"tactical_map_hour_{hour:04.1f}.png"] = base64.b64encode(fig_to_png_bytes(fig)).decode("utf-8")
+        plt.close(fig)
+    return exports
+
+
 # ============================================================
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V34")
+st.title("Spectrum Planner — V35")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
@@ -1365,8 +1616,8 @@ with st.expander("Extract / Export Visuals", expanded=True):
             st.success("PNG saved in project memory. Click Save Project to persist it to Supabase.")
 
         st.divider()
-        st.subheader("Map View under current visual")
-        st.caption("Offline Radius Map is fastest and works without internet map tiles. Plotly is interactive. PyDeck is optional and can run with no basemap.")
+        st.subheader("Tactical Map Under Current Visual")
+        st.caption("V35 controls are visible here: map layer, RF coverage, unit icons, frequency bands, red overlap warnings, congestion heat, hour replay, and PNG animation frames.")
         map_enabled = st.checkbox("Enable map rendering", value=False, key=f"map_enabled_{active_sheet}")
         if map_enabled:
             mc1, mc2, mc3, mc4 = st.columns(4)
@@ -1378,8 +1629,119 @@ with st.expander("Extract / Export Visuals", expanded=True):
                 radius_units = st.selectbox("Coverage Radius units", ["meters", "kilometers", "miles"], index=0)
             with mc4:
                 max_map_rows = st.number_input("Max map rows", value=DEFAULT_MAX_MAP_ROWS, min_value=25, max_value=2000, step=25)
-            show_radius = st.checkbox("Show radius circles", value=True)
-            if map_mode == "Offline Radius Map":
+
+            show_radius = st.checkbox("Show RF coverage circles", value=True)
+
+            if map_mode == "Tactical Offline Ops Map":
+                st.markdown("**Tactical Map Full Controls**")
+                t1, t2, t3, t4 = st.columns(4)
+                with t1:
+                    map_layer = st.selectbox("Map layer", ["Offline Grid", "Street Map", "Satellite", "Military Topographic"], index=0)
+                with t2:
+                    color_mode = st.selectbox("Color by", ["Equipment", "Unit", "Sponsor", "Tech", "Frequency Band"], index=4)
+                with t3:
+                    map_theme = st.selectbox("Map theme", ["Light", "Dark"], index=0)
+                with t4:
+                    show_unit_icons = st.checkbox("Unit icons instead of plain dots", value=True)
+
+                t5, t6, t7, t8 = st.columns(4)
+                with t5:
+                    show_labels = st.checkbox("Unit labels", value=True)
+                with t6:
+                    show_overlap_warning = st.checkbox("Interference overlap shown in red", value=True)
+                with t7:
+                    show_congestion_heat = st.checkbox("Heat map of spectrum congestion", value=True)
+                with t8:
+                    show_grid = st.checkbox("Grid/MGRS-style lines", value=True)
+
+                time_control = st.checkbox("Hour-by-hour replay slider", value=False)
+                if time_control:
+                    selected_hour = st.slider("Replay exercise hour", 0.0, 24.0, 6.0, 0.25)
+                    show_all_hours = False
+                else:
+                    selected_hour = None
+                    show_all_hours = True
+
+                map_df = build_map_df_v35(
+                    visual_df,
+                    color_by=map_color_by,
+                    radius_units=radius_units,
+                    max_rows=int(max_map_rows),
+                    selected_hour=selected_hour,
+                    show_all_hours=show_all_hours,
+                )
+
+                if map_df.empty:
+                    st.info("No valid Latitude/Longitude rows available for the tactical map.")
+                else:
+                    map_fig = tactical_ops_map_v35(
+                        map_df,
+                        map_layer=map_layer,
+                        show_radius=show_radius,
+                        show_labels=show_labels,
+                        show_unit_icons=show_unit_icons,
+                        color_mode=color_mode,
+                        show_overlap_warning=show_overlap_warning,
+                        show_congestion_heat=show_congestion_heat,
+                        show_grid=show_grid,
+                        selected_hour=selected_hour,
+                        show_all_hours=show_all_hours,
+                        map_theme=map_theme,
+                    )
+                    st.pyplot(map_fig, use_container_width=True)
+                    map_png = fig_to_png_bytes(map_fig)
+                    st.download_button("Download tactical map PNG", data=map_png, file_name=f"tactical_ops_map_{timestamp_string()}.png", mime="image/png", use_container_width=True)
+
+                    if st.button("Save tactical map PNG to project", use_container_width=True):
+                        st.session_state.setdefault("saved_png_exports", {})[f"tactical_ops_map_{active_sheet}.png"] = base64.b64encode(map_png).decode("utf-8")
+                        st.success("Tactical map PNG saved in project memory. Click Save Project to persist it.")
+
+                    with st.expander("Animation / Hour-by-Hour Export", expanded=False):
+                        st.caption("Generates separate PNG frames for each selected hour. No ZIP is used.")
+                        ac1, ac2, ac3 = st.columns(3)
+                        with ac1:
+                            anim_start = st.number_input("Animation start hour", value=6.0, min_value=0.0, max_value=24.0, step=0.25)
+                        with ac2:
+                            anim_end = st.number_input("Animation end hour", value=18.0, min_value=0.0, max_value=24.0, step=0.25)
+                        with ac3:
+                            anim_step = st.number_input("Animation step hours", value=1.0, min_value=0.25, max_value=6.0, step=0.25)
+
+                        if st.button("Generate hour-by-hour PNG frames", use_container_width=True):
+                            hours = []
+                            h = anim_start
+                            while h <= anim_end + 1e-9:
+                                hours.append(round(h, 2))
+                                h += anim_step
+                            map_options = {
+                                "map_color_by": map_color_by,
+                                "radius_units": radius_units,
+                                "max_map_rows": int(max_map_rows),
+                                "map_layer": map_layer,
+                                "show_radius": show_radius,
+                                "show_labels": show_labels,
+                                "show_unit_icons": show_unit_icons,
+                                "color_mode": color_mode,
+                                "show_overlap_warning": show_overlap_warning,
+                                "show_congestion_heat": show_congestion_heat,
+                                "show_grid": show_grid,
+                                "map_theme": map_theme,
+                            }
+                            st.session_state["animation_png_exports"] = build_animation_frames_pngs(visual_df, hours, map_options)
+                            st.success(f"Generated {len(hours)} PNG frame(s).")
+
+                        if st.session_state.get("animation_png_exports"):
+                            for fname, b64 in st.session_state["animation_png_exports"].items():
+                                st.download_button(f"Download {fname}", data=base64.b64decode(b64.encode("utf-8")), file_name=fname, mime="image/png", use_container_width=True)
+
+                    with st.expander("LOS / Terrain Elevation", expanded=False):
+                        st.warning("True LOS prediction and terrain elevation require elevation data such as DEM/DTED. This version includes the workflow controls but does not calculate terrain-blocked LOS yet.")
+                        st.file_uploader("Future input: upload DEM/DTED elevation file", type=["tif", "tiff", "hgt", "dt0", "dt1", "dt2"], disabled=True)
+                        st.checkbox("Future option: calculate line-of-sight between selected sites", value=False, disabled=True)
+                        st.checkbox("Future option: terrain elevation profile", value=False, disabled=True)
+
+                st.caption("Included: map layer selector, RF coverage circles, unit icons, color by frequency band, red overlap lines, congestion heat, hour replay slider, and animation frame export.")
+
+            elif map_mode == "Offline Radius Map":
                 map_df, map_fig = render_offline_radius_map(visual_df, color_by=map_color_by, radius_units=radius_units, max_rows=int(max_map_rows), show_radius=show_radius)
                 if not map_df.empty:
                     st.download_button("Download map PNG", data=fig_to_png_bytes(map_fig), file_name=f"offline_radius_map_{timestamp_string()}.png", mime="image/png", use_container_width=True)
@@ -1389,7 +1751,7 @@ with st.expander("Extract / Export Visuals", expanded=True):
                 pydeck_style = st.selectbox("PyDeck basemap", ["No basemap", "Carto light", "Carto dark"], index=0)
                 render_pydeck_map(visual_df, color_by=map_color_by, radius_units=radius_units, max_rows=int(max_map_rows), show_radius=show_radius, map_style_mode=pydeck_style)
         else:
-            st.info("Map is disabled for performance. Enable it when needed. Default Offline Radius Map is best for restricted networks.")
+            st.info("Map is disabled for performance. Enable it when needed.")
     with tab2:
         pfig, _ = power_chart(visual_df, color_by="Equipment", dark=dark, sheet_name=active_sheet, draw_order=draw_order, high_power_alpha=high_power_alpha, low_power_alpha=low_power_alpha, label_mode=label_mode)
         st.pyplot(pfig, use_container_width=True)
