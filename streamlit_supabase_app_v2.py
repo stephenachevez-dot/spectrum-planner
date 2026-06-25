@@ -444,6 +444,26 @@ def load_project(project_id):
         return False, f"Load failed: {exc}"
 
 
+
+def delete_project(project_id):
+    client = get_supabase_client()
+    if client is None:
+        return False, "Supabase is not configured."
+    if not str(project_id).strip():
+        return False, "No Project ID selected."
+
+    try:
+        client.table("spectrum_projects").delete().eq("project_id", str(project_id).strip()).execute()
+
+        if st.session_state.get("active_project_id") == str(project_id).strip():
+            st.session_state.pop("active_project_id", None)
+            st.session_state.pop("active_project_name", None)
+
+        return True, f"Deleted project '{project_id}'."
+    except Exception as exc:
+        return False, f"Delete failed: {exc}"
+
+
 def list_projects():
     client = get_supabase_client()
     if client is None:
@@ -1746,7 +1766,7 @@ def los_selection_controls(map_df, match_by):
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V40")
+st.title("Spectrum Planner — V41")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
@@ -1785,6 +1805,23 @@ with st.sidebar:
         if st.button("Save Project", type="primary", use_container_width=True):
             ok, msg = save_project(project_id_input, project_name_input, updated_by_input)
             (st.success if ok else st.error)(msg)
+            if ok:
+                st.session_state["saved_project_list"] = list_projects()
+
+    st.markdown("**Delete Saved Project**")
+    delete_confirm = st.checkbox(
+        "Confirm delete selected project",
+        value=False,
+        key="delete_project_confirm",
+        help="This permanently deletes the selected project from Supabase.",
+    )
+    if st.button("🗑️ Delete Selected Project", disabled=(not delete_confirm or not str(project_id_input).strip()), use_container_width=True):
+        ok, msg = delete_project(project_id_input)
+        (st.success if ok else st.error)(msg)
+        if ok:
+            st.session_state["saved_project_list"] = list_projects()
+            st.rerun()
+
     duplicate_id = st.text_input("Duplicate as Project ID", value="")
     if st.button("Duplicate Current Project as New Day", use_container_width=True):
         if not duplicate_id.strip():
