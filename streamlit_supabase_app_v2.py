@@ -100,56 +100,52 @@ def key_name(value) -> str:
 
 
 def to_json_safe(x):
-    """Convert any workbook value into strict JSON-safe data.
-
-    Supabase/PostgREST rejects NaN, Infinity, pandas NA, numpy scalar NaN,
-    and Excel time/date objects. This function removes all of them.
-    """
+    """Return a JSON-safe value: no NaN, Infinity, pandas NA, numpy scalars, or Excel time objects."""
     if x is None:
         return None
 
-    # pandas/numpy missing values
+    # pandas / numpy NA
     try:
         if pd.isna(x):
             return None
     except Exception:
         pass
 
-    # numpy scalar -> Python scalar
+    # numpy scalar to native Python
     try:
         if isinstance(x, np.generic):
             x = x.item()
     except Exception:
         pass
 
-    # floats: reject NaN/Infinity
+    # float guard
     if isinstance(x, float):
         if math.isnan(x) or math.isinf(x):
             return None
         return float(x)
 
-    # ints/bools/strings are safe
-    if isinstance(x, (int, bool, str)):
+    # native safe primitives
+    if isinstance(x, (str, bool, int)):
         return x
 
-    # timestamps, Excel times, dates
+    # dates/times
     if isinstance(x, (pd.Timestamp, datetime, date, time)):
         return x.isoformat()
 
-    # anything with isoformat
+    # recursively clean containers
+    if isinstance(x, dict):
+        return {str(k): to_json_safe(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple, set)):
+        return [to_json_safe(v) for v in x]
+
+    # objects with isoformat
     if hasattr(x, "isoformat"):
         try:
             return x.isoformat()
         except Exception:
             pass
 
-    # lists/dicts: clean recursively
-    if isinstance(x, list):
-        return [to_json_safe(v) for v in x]
-    if isinstance(x, dict):
-        return {str(k): to_json_safe(v) for k, v in x.items()}
-
-    # final fallback
+    # last resort
     try:
         return str(x)
     except Exception:
@@ -344,27 +340,43 @@ def get_supabase_client():
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_ANON_KEY"])
 
 
+
+def dataframe_json_records(df):
+    """Convert a DataFrame into strict JSON-safe records for Supabase."""
+    if df is None:
+        return []
+
+    clean = df.copy()
+    clean.columns = [str(c) for c in clean.columns]
+
+    records = []
+    for _, row in clean.iterrows():
+        rec = {}
+        for col in clean.columns:
+            rec[str(col)] = to_json_safe(row.get(col))
+        records.append(rec)
+
+    # Validate: this fails if NaN/Infinity survives.
+    json.dumps(records, allow_nan=False)
+    return records
+
+
 def workbook_to_jsonable(sheets):
-    """Convert full workbook into strict JSON-safe payload for Supabase."""
+    """Convert the entire workbook into strict JSON-safe Supabase payload."""
     payload = {}
+
     for name, df in sheets.items():
         clean = recalc_start_end_fast(df).copy()
-
-        # Make column names strings and remove unsafe values.
         clean.columns = [str(c) for c in clean.columns]
-
-        records = dataframe_json_records(clean)
 
         sheet_payload = {
             "columns": [str(c) for c in clean.columns],
-            "records": records,
+            "records": dataframe_json_records(clean),
         }
 
-        # Validate each sheet before saving.
         json.dumps(sheet_payload, allow_nan=False)
         payload[str(name)] = sheet_payload
 
-    # Validate whole workbook.
     json.dumps(payload, allow_nan=False)
     return payload
 
@@ -391,25 +403,21 @@ def save_project(project_id, project_name, updated_by):
         return False, "No workbook is loaded."
 
     try:
-        workbook_payload = workbook_to_jsonable(st.session_state["sheets"])
-        png_payload = to_json_safe(st.session_state.get("saved_png_exports", {}))
-
         row = {
             "project_id": str(project_id).strip(),
             "project_name": str(project_name).strip() or str(project_id).strip(),
-            "workbook": workbook_payload,
-            "png_exports": png_payload,
+            "workbook": workbook_to_jsonable(st.session_state["sheets"]),
+            "png_exports": to_json_safe(st.session_state.get("saved_png_exports", {})),
             "updated_by": str(updated_by).strip() or "unknown",
             "updated_at": datetime.utcnow().isoformat(),
         }
 
-        # Final strict validation before Supabase call.
+        # Final validation before Supabase call.
         json.dumps(row, allow_nan=False)
 
         client.table("spectrum_projects").upsert(row, on_conflict="project_id").execute()
         return True, f"Saved project '{row['project_name']}'."
-    except ValueError as exc:
-        return False, f"Save failed: workbook still contains non-JSON value. Details: {exc}"
+
     except Exception as exc:
         return False, f"Save failed: {exc}"
 
@@ -1738,7 +1746,7 @@ def los_selection_controls(map_df, match_by):
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V34")
+st.title("Spectrum Planner — V40")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
