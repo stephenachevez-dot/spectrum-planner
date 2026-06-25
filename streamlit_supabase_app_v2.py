@@ -32,7 +32,7 @@ try:
 except Exception:
     create_client = None
 
-st.set_page_config(page_title="Spectrum Planner V42")
+st.set_page_config(page_title="Spectrum Planner V43")
 
 # ============================================================
 # Spectrum Planner V34 — Tactical Ops Map + Offline Radius Map
@@ -1864,7 +1864,7 @@ def active_frequency_text_summary(df, max_rows=200):
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V42")
+st.title("Spectrum Planner — V43")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
