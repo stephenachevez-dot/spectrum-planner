@@ -9,7 +9,12 @@ from datetime import datetime, date, time
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+from matplotlib.patches import Rectangle, Circle
+
+try:
+    import plotly.express as px
+except Exception:
+    px = None
 
 try:
     import pydeck as pdk
@@ -21,17 +26,16 @@ try:
 except Exception:
     create_client = None
 
-st.set_page_config(page_title="Spectrum Planner V32 Map Radius", layout="wide")
+st.set_page_config(page_title="Spectrum Planner V33 Better Map Views", layout="wide")
 
 # ============================================================
-# Spectrum Planner V32 — Map Radius + Performance Controls
+# Spectrum Planner V33 — Better Map Views + Offline Radius Map
 # ============================================================
 # Adds:
-# - Map displayed under the current Time x Frequency view, not as a new tab.
+# - Offline Radius Map default: no internet tiles / no Mapbox required.
+# - Plotly Coordinate Map option for interactive tile-free viewing.
+# - PyDeck Map option with No Basemap / Carto light / Carto dark.
 # - Radius circles using Coverage Radius.
-# - Radius unit selector: meters / kilometers / miles.
-# - Map performance controls so the app does not lag as much.
-# - PyDeck map is optional and only renders when enabled.
 # - Keeps project save/load, saved-project dropdown, planner, visual exports,
 #   label orientation, label hide/show, and transparency controls.
 # ============================================================
@@ -863,7 +867,7 @@ def time_debug_table(df):
 # ============================================================
 
 def hex_to_rgb(hex_color):
-    hex_color = hex_color.lstrip("#")
+    hex_color = str(hex_color).lstrip("#")
     return [int(hex_color[i:i + 2], 16) for i in (0, 2, 4)]
 
 
@@ -878,6 +882,10 @@ def radius_to_meters(value, units):
     return r
 
 
+def radius_to_degrees_lat(radius_meters):
+    return radius_meters / 111320.0
+
+
 def build_map_df(df, color_by="Equipment", radius_units="meters", max_rows=300):
     working = active_only(df, show_inactive=st.session_state.get("show_inactive_rows", False))
     lat_col = find_col(working, ["Latitude", "Lat"])
@@ -890,6 +898,7 @@ def build_map_df(df, color_by="Equipment", radius_units="meters", max_rows=300):
     equipment_col = find_col(working, ["Equipment"])
     unit_col = find_col(working, ["Unit"])
     sponsor_col = find_col(working, ["Sponsor"])
+    tech_col = find_col(working, ["Tech"])
     location_col = find_col(working, ["Location", "Site Name", "Site"])
     color_col = find_col(working, [color_by, "Equipment", "Unit", "Sponsor", "Tech"])
     if lat_col is None or lon_col is None or working.empty:
@@ -905,25 +914,36 @@ def build_map_df(df, color_by="Equipment", radius_units="meters", max_rows=300):
         t1, t2 = row_window(row, start_col, end_col)
         center = to_float(row.get(center_col)) if center_col else None
         group = label_value(row.get(color_col, "(blank)")) if color_col else "(blank)"
-        rgb = hex_to_rgb(stable_color(group))
-        radius_m = radius_to_meters(row.get(radius_col), radius_units) if radius_col else 0.0
+        color_hex = stable_color(group)
+        rgb = hex_to_rgb(color_hex)
+        radius_raw = row.get(radius_col) if radius_col else 0
+        radius_m = radius_to_meters(radius_raw, radius_units) if radius_col else 0.0
         power = to_float(row.get(power_col), 1.0) if power_col else 1.0
         rows.append({
             "lat": lat,
             "lon": lon,
+            "Latitude": lat,
+            "Longitude": lon,
             "radius_m": radius_m,
+            "radius_raw": radius_raw,
             "point_radius": max(40, min(300, 40 + (power or 0) * 10)),
+            "marker_size": max(8, min(28, 8 + (power or 1) * 1.5)),
+            "color_hex": color_hex,
             "color": rgb + [150],
             "fill_color": rgb + [55],
             "line_color": rgb + [190],
             "Equipment": row.get(equipment_col, "") if equipment_col else "",
             "Unit": row.get(unit_col, "") if unit_col else "",
             "Sponsor": row.get(sponsor_col, "") if sponsor_col else "",
+            "Tech": row.get(tech_col, "") if tech_col else "",
             "Location": row.get(location_col, "") if location_col else "",
             "Frequency": f"{center:.3f} MHz" if center is not None else "",
+            "Center MHz": center,
             "Time": f"{format_time_hhmm(t1)}-{format_time_hhmm(t2)}",
             "Power_W": power,
             "Radius_m": radius_m,
+            "Radius": radius_raw,
+            "Radius Units": radius_units,
             "Color_By": group,
         })
     out = pd.DataFrame(rows)
@@ -932,14 +952,97 @@ def build_map_df(df, color_by="Equipment", radius_units="meters", max_rows=300):
     return out
 
 
-def render_radius_map(df, color_by="Equipment", radius_units="meters", max_rows=300, show_radius=True):
-    if pdk is None:
-        st.error("PyDeck is not available. Add pydeck to requirements.txt to use radius circles.")
-        return
+def render_offline_radius_map(df, color_by="Equipment", radius_units="meters", max_rows=300, show_radius=True):
+    map_df = build_map_df(df, color_by=color_by, radius_units=radius_units, max_rows=max_rows)
+    fig, ax = plt.subplots(figsize=(14, 8))
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("#F8FAFC")
+    if map_df.empty:
+        ax.text(0.5, 0.5, "No valid Latitude/Longitude rows available for the map.", ha="center", va="center")
+        ax.axis("off")
+        st.pyplot(fig, use_container_width=True)
+        return map_df, fig
+
+    min_lat, max_lat = map_df["lat"].min(), map_df["lat"].max()
+    min_lon, max_lon = map_df["lon"].min(), map_df["lon"].max()
+    lat_span = max(max_lat - min_lat, 0.01)
+    lon_span = max(max_lon - min_lon, 0.01)
+
+    for _, row in map_df.iterrows():
+        lat = row["lat"]
+        lon = row["lon"]
+        color = row["color_hex"]
+        radius_m = row.get("radius_m", 0.0)
+        if show_radius and radius_m and radius_m > 0:
+            r_lat = radius_to_degrees_lat(radius_m)
+            denom = 111320.0 * max(math.cos(math.radians(lat)), 0.15)
+            r_lon = radius_m / denom
+            r = max(r_lat, r_lon)
+            ax.add_patch(Circle((lon, lat), radius=r, facecolor=color, edgecolor=color, linewidth=1.2, alpha=0.16))
+        size = 40 + min(max(to_float(row.get("Power_W"), 1.0), 1.0), 50.0) * 3
+        ax.scatter(lon, lat, s=size, c=color, edgecolors="black", linewidths=0.6, alpha=0.90, zorder=5)
+        label = row.get("Equipment") or row.get("Unit") or ""
+        if label:
+            ax.text(lon, lat, str(label)[:18], fontsize=8, ha="left", va="bottom", zorder=6)
+
+    pad_lat = max(lat_span * 0.25, 0.01)
+    pad_lon = max(lon_span * 0.25, 0.01)
+    ax.set_xlim(min_lon - pad_lon, max_lon + pad_lon)
+    ax.set_ylim(min_lat - pad_lat, max_lat + pad_lat)
+    ax.set_title("Offline Radius Map — Latitude / Longitude", fontsize=14, fontweight="bold")
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.grid(True, alpha=0.35)
+    fig.tight_layout()
+    st.pyplot(fig, use_container_width=True)
+    st.caption(f"Map rows displayed: {len(map_df)}. Offline map does not use external map tiles.")
+    return map_df, fig
+
+
+def render_plotly_coordinate_map(df, color_by="Equipment", radius_units="meters", max_rows=300, show_radius=True):
+    if px is None:
+        st.warning("Plotly is not installed. Use Offline Radius Map instead.")
+        return pd.DataFrame()
     map_df = build_map_df(df, color_by=color_by, radius_units=radius_units, max_rows=max_rows)
     if map_df.empty:
         st.info("No valid Latitude/Longitude rows available for the map.")
-        return
+        return map_df
+    hover = ["Equipment", "Unit", "Sponsor", "Tech", "Frequency", "Time", "Power_W", "Radius", "Radius Units"]
+    fig = px.scatter_geo(
+        map_df,
+        lat="lat",
+        lon="lon",
+        color="Color_By",
+        size="marker_size",
+        hover_data=hover,
+        projection="equirectangular",
+        title="Plotly Coordinate Map",
+    )
+    fig.update_geos(
+        fitbounds="locations",
+        visible=True,
+        showland=True,
+        landcolor="rgb(245,245,245)",
+        showcountries=True,
+        countrycolor="rgb(180,180,180)",
+        showsubunits=True,
+        subunitcolor="rgb(200,200,200)",
+    )
+    fig.update_layout(height=650, margin=dict(l=0, r=0, t=40, b=0))
+    st.plotly_chart(fig, use_container_width=True)
+    if show_radius:
+        st.caption("Plotly Coordinate Map uses marker size as a lightweight radius approximation. Use Offline Radius Map for drawn radius circles.")
+    return map_df
+
+
+def render_pydeck_map(df, color_by="Equipment", radius_units="meters", max_rows=300, show_radius=True, map_style_mode="No basemap"):
+    if pdk is None:
+        st.error("PyDeck is not available. Add pydeck to requirements.txt to use this map.")
+        return pd.DataFrame()
+    map_df = build_map_df(df, color_by=color_by, radius_units=radius_units, max_rows=max_rows)
+    if map_df.empty:
+        st.info("No valid Latitude/Longitude rows available for the map.")
+        return map_df
     center_lat = float(map_df["lat"].mean())
     center_lon = float(map_df["lon"].mean())
     layers = []
@@ -973,24 +1076,31 @@ def render_radius_map(df, color_by="Equipment", radius_units="meters", max_rows=
         pickable=True,
     ))
     tooltip = {
-        "html": "<b>{Equipment}</b><br/>Unit: {Unit}<br/>Sponsor: {Sponsor}<br/>Location: {Location}<br/>Freq: {Frequency}<br/>Time: {Time}<br/>Power: {Power_W} W<br/>Radius: {Radius_m} m<br/>Group: {Color_By}",
+        "html": "<b>{Equipment}</b><br/>Unit: {Unit}<br/>Sponsor: {Sponsor}<br/>Location: {Location}<br/>Freq: {Frequency}<br/>Time: {Time}<br/>Power: {Power_W} W<br/>Radius: {Radius} {Radius Units}<br/>Group: {Color_By}",
         "style": {"backgroundColor": "#111827", "color": "white"},
     }
+    if map_style_mode == "Carto light":
+        map_style = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+    elif map_style_mode == "Carto dark":
+        map_style = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+    else:
+        map_style = None
     deck = pdk.Deck(
         layers=layers,
         initial_view_state=pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=10, pitch=0),
         tooltip=tooltip,
-        map_style="mapbox://styles/mapbox/light-v9",
+        map_style=map_style,
     )
     st.pydeck_chart(deck, use_container_width=True)
-    st.caption(f"Map rows displayed: {len(map_df)}. Radius circles use Coverage Radius in {radius_units}.")
+    st.caption(f"Map rows displayed: {len(map_df)}. Use No basemap if your network blocks map tiles.")
+    return map_df
 
 # ============================================================
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V32 Map Radius + Performance")
-st.caption("Map radius circles are optional and render only when enabled to reduce lag.")
+st.title("Spectrum Planner — V33")
+st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
     st.header("Workbook")
@@ -1256,21 +1366,30 @@ with st.expander("Extract / Export Visuals", expanded=True):
 
         st.divider()
         st.subheader("Map View under current visual")
-        st.caption("Map rendering can lag because every Streamlit click reruns the script and redraws map tiles/layers. Keep the map disabled until needed, cap map rows, and use radius circles only when needed.")
+        st.caption("Offline Radius Map is fastest and works without internet map tiles. Plotly is interactive. PyDeck is optional and can run with no basemap.")
         map_enabled = st.checkbox("Enable map rendering", value=False, key=f"map_enabled_{active_sheet}")
         if map_enabled:
             mc1, mc2, mc3, mc4 = st.columns(4)
             with mc1:
-                map_color_by = st.selectbox("Map color by", ["Equipment", "Unit", "Sponsor", "Tech", "Tech Category"], index=0)
+                map_mode = st.selectbox("Map mode", ["Offline Radius Map", "Plotly Coordinate Map", "PyDeck Map"], index=0)
             with mc2:
-                radius_units = st.selectbox("Coverage Radius units", ["meters", "kilometers", "miles"], index=0)
+                map_color_by = st.selectbox("Map color by", ["Equipment", "Unit", "Sponsor", "Tech", "Tech Category"], index=0)
             with mc3:
-                show_radius = st.checkbox("Show radius circles", value=True)
+                radius_units = st.selectbox("Coverage Radius units", ["meters", "kilometers", "miles"], index=0)
             with mc4:
                 max_map_rows = st.number_input("Max map rows", value=DEFAULT_MAX_MAP_ROWS, min_value=25, max_value=2000, step=25)
-            render_radius_map(visual_df, color_by=map_color_by, radius_units=radius_units, max_rows=int(max_map_rows), show_radius=show_radius)
+            show_radius = st.checkbox("Show radius circles", value=True)
+            if map_mode == "Offline Radius Map":
+                map_df, map_fig = render_offline_radius_map(visual_df, color_by=map_color_by, radius_units=radius_units, max_rows=int(max_map_rows), show_radius=show_radius)
+                if not map_df.empty:
+                    st.download_button("Download map PNG", data=fig_to_png_bytes(map_fig), file_name=f"offline_radius_map_{timestamp_string()}.png", mime="image/png", use_container_width=True)
+            elif map_mode == "Plotly Coordinate Map":
+                render_plotly_coordinate_map(visual_df, color_by=map_color_by, radius_units=radius_units, max_rows=int(max_map_rows), show_radius=show_radius)
+            else:
+                pydeck_style = st.selectbox("PyDeck basemap", ["No basemap", "Carto light", "Carto dark"], index=0)
+                render_pydeck_map(visual_df, color_by=map_color_by, radius_units=radius_units, max_rows=int(max_map_rows), show_radius=show_radius, map_style_mode=pydeck_style)
         else:
-            st.info("Map is disabled for performance. Enable it when you need to view locations/radius.")
+            st.info("Map is disabled for performance. Enable it when needed. Default Offline Radius Map is best for restricted networks.")
     with tab2:
         pfig, _ = power_chart(visual_df, color_by="Equipment", dark=dark, sheet_name=active_sheet, draw_order=draw_order, high_power_alpha=high_power_alpha, low_power_alpha=low_power_alpha, label_mode=label_mode)
         st.pyplot(pfig, use_container_width=True)
@@ -1303,4 +1422,4 @@ with st.expander("Extract / Export Visuals", expanded=True):
         for name, b64 in st.session_state["saved_png_exports"].items():
             st.download_button(f"Download saved {name}", data=base64.b64decode(b64.encode("utf-8")), file_name=name, mime="image/png", use_container_width=True)
 
-st.caption("V32 note: map lag is reduced by making PyDeck optional, limiting displayed map rows, and rendering radius circles only when enabled.")
+st.caption("V33 note: Offline Radius Map is the default for restricted networks and does not require map tiles.")
