@@ -10,7 +10,17 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle, Circle
+from matplotlib.patches import Rectangle
+
+# Optional Plotly support for interactive tactical map
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+except Exception:
+    px = None
+    go = None
+
+, Circle
 
 try:
     import plotly.express as px
@@ -1156,7 +1166,7 @@ def render_pydeck_map(df, color_by="Equipment", radius_units="meters", max_rows=
 
 
 # ============================================================
-# V37 Interactive LOS Tactical Map
+# V38 Plotly Import Fix
 # ============================================================
 
 def band_label(center_mhz):
@@ -1407,7 +1417,7 @@ def build_animation_frames_pngs(source_df, hours, map_options):
 
 
 # ============================================================
-# V37 Interactive Tactical LOS Map
+# V38 Interactive Tactical LOS Map
 # ============================================================
 
 def los_group_value(row, match_by):
@@ -1459,7 +1469,7 @@ def build_los_pairs(map_df, match_by="Equipment", selected_labels=None, max_pair
     return pairs
 
 
-def plotly_interactive_tactical_map_v37(
+def plotly_interactive_tactical_map_v38(
     map_df,
     map_layer="Offline Grid",
     show_radius=True,
@@ -1473,8 +1483,9 @@ def plotly_interactive_tactical_map_v37(
     los_match_by="Equipment",
     selected_los_labels=None,
 ):
-    if go is None:
-        st.warning("Plotly is not installed. Add plotly to requirements.txt for zoom/pan tactical map.")
+    plotly_go = globals().get("go", None)
+    if plotly_go is None:
+        st.warning("Plotly is not installed or did not import. Add plotly to requirements.txt, or use Tactical Offline Ops Map.")
         return None
 
     if map_df.empty:
@@ -1517,7 +1528,7 @@ def plotly_interactive_tactical_map_v37(
         axis=1,
     )
 
-    fig = go.Figure()
+    fig = plotly_go.Figure()
 
     # Offline visual layer background.
     bg = "#F8FAFC"
@@ -1535,7 +1546,7 @@ def plotly_interactive_tactical_map_v37(
     # Congestion heat as a density-like 2D histogram.
     if show_congestion_heat and len(working) >= 2:
         fig.add_trace(
-            go.Histogram2dContour(
+            plotly_go.Histogram2dContour(
                 x=working["lon"],
                 y=working["lat"],
                 colorscale="Reds",
@@ -1587,7 +1598,7 @@ def plotly_interactive_tactical_map_v37(
                 freq_close = ca is not None and cb is not None and abs(ca - cb) <= 10.0
                 if freq_close and circles_overlap_v35(rows[i], rows[j]):
                     fig.add_trace(
-                        go.Scatter(
+                        plotly_go.Scatter(
                             x=[rows[i]["lon"], rows[j]["lon"]],
                             y=[rows[i]["lat"], rows[j]["lat"]],
                             mode="lines",
@@ -1615,7 +1626,7 @@ def plotly_interactive_tactical_map_v37(
         )
         for a, b in los_pairs:
             fig.add_trace(
-                go.Scatter(
+                plotly_go.Scatter(
                     x=[a["lon"], b["lon"]],
                     y=[a["lat"], b["lat"]],
                     mode="lines",
@@ -1631,7 +1642,7 @@ def plotly_interactive_tactical_map_v37(
     # Points grouped for legend.
     for group_name, group_df in working.groupby(legend_group):
         fig.add_trace(
-            go.Scatter(
+            plotly_go.Scatter(
                 x=group_df["lon"],
                 y=group_df["lat"],
                 mode="markers+text" if show_labels else "markers",
@@ -1732,7 +1743,7 @@ def los_selection_controls(map_df, match_by):
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V37")
+st.title("Spectrum Planner — V38")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
@@ -2056,20 +2067,38 @@ with st.expander("Extract / Export Visuals", expanded=True):
                     with st.expander("Select systems for LOS", expanded=True):
                         selected_los_labels = los_selection_controls(map_df, los_match_by)
 
-                plotly_interactive_tactical_map_v37(
-                    map_df,
-                    map_layer=map_layer,
-                    show_radius=show_radius,
-                    show_labels=show_labels,
-                    color_mode=color_mode,
-                    show_overlap_warning=show_overlap_warning,
-                    show_congestion_heat=show_congestion_heat,
-                    selected_hour=selected_hour,
-                    show_all_hours=show_all_hours,
-                    los_enabled=los_enabled,
-                    los_match_by=los_match_by,
-                    selected_los_labels=selected_los_labels,
-                )
+                if globals().get("go", None) is None:
+                    st.warning("Interactive Tactical Map requires Plotly. Add `plotly` to requirements.txt, then redeploy. Falling back to Tactical Offline Ops Map below.")
+                    fallback_fig = tactical_ops_map_v35(
+                        map_df,
+                        map_layer=map_layer,
+                        show_radius=show_radius,
+                        show_labels=show_labels,
+                        show_unit_icons=True,
+                        color_mode=color_mode,
+                        show_overlap_warning=show_overlap_warning,
+                        show_congestion_heat=show_congestion_heat,
+                        show_grid=True,
+                        selected_hour=selected_hour,
+                        show_all_hours=show_all_hours,
+                        map_theme="Light",
+                    )
+                    st.pyplot(fallback_fig, use_container_width=True)
+                else:
+                    plotly_interactive_tactical_map_v38(
+                        map_df,
+                        map_layer=map_layer,
+                        show_radius=show_radius,
+                        show_labels=show_labels,
+                        color_mode=color_mode,
+                        show_overlap_warning=show_overlap_warning,
+                        show_congestion_heat=show_congestion_heat,
+                        selected_hour=selected_hour,
+                        show_all_hours=show_all_hours,
+                        los_enabled=los_enabled,
+                        los_match_by=los_match_by,
+                        selected_los_labels=selected_los_labels,
+                    )
 
             elif map_mode == "Tactical Offline Ops Map":
                 st.markdown("**Tactical Map Full Controls**")
