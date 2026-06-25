@@ -32,7 +32,7 @@ try:
 except Exception:
     create_client = None
 
-st.set_page_config(page_title="Spectrum Planner V41")
+st.set_page_config(page_title="Spectrum Planner V42")
 
 # ============================================================
 # Spectrum Planner V34 — Tactical Ops Map + Offline Radius Map
@@ -1762,11 +1762,109 @@ def los_selection_controls(map_df, match_by):
     return selected_labels
 
 
+
+# ============================================================
+# Active Frequency Extract / User Handout
+# ============================================================
+
+ACTIVE_EXTRACT_DEFAULT_COLUMNS = [
+    "Unit",
+    "Sponsor",
+    "Equipment",
+    "Tech",
+    "Start Time",
+    "End Time",
+    "Start Frequency (MHz)",
+    "Center Frequency (MHz)",
+    "End Frequency (MHz)",
+    "Bandwidth (MHz)",
+    "Power (W)",
+    "Power (dBm)",
+    "Location",
+    "Site Name",
+    "Notes",
+]
+
+
+def build_active_frequency_extract(df, selected_columns=None, include_locked_status=False):
+    """Create a clean active-frequency handout table for users."""
+    working = active_only(df, show_inactive=False)
+    working = recalc_start_end_fast(working).copy()
+
+    center_col = find_col(working, ["Center Frequency (MHz)", "Center Frequency", "CenterF", "Frequency"])
+    if center_col:
+        working["_center_sort"] = pd.to_numeric(working[center_col], errors="coerce")
+        working = working[working["_center_sort"].notna()].copy()
+    else:
+        working["_center_sort"] = range(len(working))
+
+    available_defaults = [c for c in ACTIVE_EXTRACT_DEFAULT_COLUMNS if c in working.columns]
+    if include_locked_status and "Locked" in working.columns:
+        available_defaults = ["Locked"] + available_defaults
+
+    if selected_columns:
+        columns = [c for c in selected_columns if c in working.columns]
+    else:
+        columns = available_defaults
+
+    out = working.sort_values(["_center_sort"]).copy()
+    out = out[columns].copy() if columns else out.drop(columns=["_center_sort"], errors="ignore")
+
+    for col in out.columns:
+        if "Frequency" in col or "Bandwidth" in col:
+            out[col] = pd.to_numeric(out[col], errors="coerce").round(6)
+        elif col in ["Power (W)", "Power (dBm)"]:
+            out[col] = pd.to_numeric(out[col], errors="coerce").round(3)
+
+    return out.reset_index(drop=True)
+
+
+def df_to_single_xlsx_bytes(df, sheet_name="Active Frequencies"):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        safe_name = str(sheet_name)[:31] if str(sheet_name).strip() else "Active Frequencies"
+        df.to_excel(writer, sheet_name=safe_name, index=False)
+    output.seek(0)
+    return output.read()
+
+
+def active_frequency_text_summary(df, max_rows=200):
+    if df.empty:
+        return "No active frequencies available."
+
+    lines = []
+    lines.append("ACTIVE FREQUENCY EXTRACT")
+    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("")
+
+    for idx, row in df.head(max_rows).iterrows():
+        unit = row.get("Unit", "")
+        equipment = row.get("Equipment", "")
+        tech = row.get("Tech", "")
+        center = row.get("Center Frequency (MHz)", "")
+        start_f = row.get("Start Frequency (MHz)", "")
+        end_f = row.get("End Frequency (MHz)", "")
+        start_t = row.get("Start Time", "")
+        end_t = row.get("End Time", "")
+        bw = row.get("Bandwidth (MHz)", "")
+        lines.append(
+            f"{idx + 1}. Unit: {unit} | Equipment: {equipment} | Tech: {tech} | "
+            f"Center: {center} MHz | Range: {start_f}-{end_f} MHz | BW: {bw} MHz | "
+            f"Time: {start_t}-{end_t}"
+        )
+
+    if len(df) > max_rows:
+        lines.append("")
+        lines.append(f"Only first {max_rows} rows shown in text summary. Use CSV/XLSX for full extract.")
+
+    return "\n".join(lines)
+
+
 # ============================================================
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V41")
+st.title("Spectrum Planner — V42")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
@@ -1929,6 +2027,65 @@ m1, m2, m3 = st.columns(3)
 m1.metric("Active rows in visuals", len(metric_df))
 m2.metric("Inactive rows hidden", len(st.session_state["sheets"][active_sheet]) - len(metric_df))
 m3.metric("Equipment conflicts", len(conflict_df))
+
+st.divider()
+st.subheader("Active Frequency Extract")
+st.caption("Create a clean active-frequency handout to send to users. Only rows checked Active are included.")
+
+extract_col_options = [c for c in ACTIVE_EXTRACT_DEFAULT_COLUMNS if c in visual_df.columns]
+extract_include_locked = st.checkbox("Include Locked status in extract", value=False)
+if extract_include_locked and "Locked" in visual_df.columns and "Locked" not in extract_col_options:
+    extract_col_options = ["Locked"] + extract_col_options
+
+selected_extract_cols = st.multiselect(
+    "Columns to include in user extract",
+    options=extract_col_options,
+    default=extract_col_options,
+    help="This does not change the workbook. It only controls the handout/export columns.",
+)
+
+active_extract_df = build_active_frequency_extract(
+    visual_df,
+    selected_columns=selected_extract_cols,
+    include_locked_status=extract_include_locked,
+)
+
+e1, e2, e3, e4 = st.columns(4)
+e1.metric("Extract rows", len(active_extract_df))
+e2.metric("Unique equipment", active_extract_df["Equipment"].nunique() if "Equipment" in active_extract_df.columns and not active_extract_df.empty else 0)
+e3.metric("Unique units", active_extract_df["Unit"].nunique() if "Unit" in active_extract_df.columns and not active_extract_df.empty else 0)
+e4.metric("Unique freqs", active_extract_df["Center Frequency (MHz)"].nunique() if "Center Frequency (MHz)" in active_extract_df.columns and not active_extract_df.empty else 0)
+
+with st.expander("Preview active frequency extract", expanded=False):
+    st.dataframe(active_extract_df, use_container_width=True, hide_index=True)
+
+x1, x2, x3 = st.columns(3)
+with x1:
+    st.download_button(
+        "Download Active Frequencies CSV",
+        data=active_extract_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"active_frequencies_{active_sheet}_{timestamp_string()}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+with x2:
+    st.download_button(
+        "Download Active Frequencies XLSX",
+        data=df_to_single_xlsx_bytes(active_extract_df, sheet_name="Active Frequencies"),
+        file_name=f"active_frequencies_{active_sheet}_{timestamp_string()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+with x3:
+    summary_text = active_frequency_text_summary(active_extract_df)
+    st.download_button(
+        "Download User Handout TXT",
+        data=summary_text.encode("utf-8"),
+        file_name=f"active_frequency_handout_{active_sheet}_{timestamp_string()}.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
+
 
 if st.sidebar.button("Run Smart Planner", type="primary", use_container_width=True):
     planner_input = recalc_start_end_fast(st.session_state["sheets"][active_sheet])
