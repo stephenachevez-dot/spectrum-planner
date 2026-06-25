@@ -32,7 +32,7 @@ try:
 except Exception:
     create_client = None
 
-st.set_page_config(page_title="Spectrum Planner V33 Better Map Views", layout="wide")
+st.set_page_config(page_title="Spectrum Planner V41")
 
 # ============================================================
 # Spectrum Planner V34 — Tactical Ops Map + Offline Radius Map
