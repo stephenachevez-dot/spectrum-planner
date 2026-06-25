@@ -1,16 +1,16 @@
 import io
 import re
 import math
-import json
 import base64
 import hashlib
+import json
 from datetime import datetime, date, time
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+from matplotlib.patches import Rectangle, Circle
 
 # Optional Plotly support for interactive tactical map
 try:
@@ -20,18 +20,13 @@ except Exception:
     px = None
     go = None
 
-,Circle
-
-try:
-    import plotly.express as px
-except Exception:
-    px = None
-
+# Optional PyDeck support
 try:
     import pydeck as pdk
 except Exception:
     pdk = None
 
+# Optional Supabase support
 try:
     from supabase import create_client
 except Exception:
@@ -1743,7 +1738,7 @@ def los_selection_controls(map_df, match_by):
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V38")
+st.title("Spectrum Planner — V34")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
