@@ -32,7 +32,7 @@ try:
 except Exception:
     create_client = None
 
-st.set_page_config(page_title="Spectrum Planner V43")
+st.set_page_config(page_title="Spectrum Planner V44", layout="wide")
 
 # ============================================================
 # Spectrum Planner V34 — Tactical Ops Map + Offline Radius Map
@@ -1864,7 +1864,7 @@ def active_frequency_text_summary(df, max_rows=200):
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V43")
+st.title("Spectrum Planner — V44")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
@@ -2032,20 +2032,28 @@ st.divider()
 st.subheader("Active Frequency Extract")
 st.caption("Create a clean active-frequency handout to send to users. Only rows checked Active are included.")
 
-extract_col_options = [c for c in ACTIVE_EXTRACT_DEFAULT_COLUMNS if c in visual_df.columns]
+# V44 fix: this extract section appears before visual_df is created later in the app,
+# so it must read directly from the current saved workbook sheet.
+extract_source_df = recalc_start_end_fast(st.session_state["sheets"][active_sheet].copy())
+
+extract_col_options = [c for c in ACTIVE_EXTRACT_DEFAULT_COLUMNS if c in extract_source_df.columns]
 extract_include_locked = st.checkbox("Include Locked status in extract", value=False)
-if extract_include_locked and "Locked" in visual_df.columns and "Locked" not in extract_col_options:
+if extract_include_locked and "Locked" in extract_source_df.columns and "Locked" not in extract_col_options:
     extract_col_options = ["Locked"] + extract_col_options
 
-selected_extract_cols = st.multiselect(
-    "Columns to include in user extract",
-    options=extract_col_options,
-    default=extract_col_options,
-    help="This does not change the workbook. It only controls the handout/export columns.",
-)
+if not extract_col_options:
+    st.warning("No matching extract columns were found in this sheet.")
+    selected_extract_cols = []
+else:
+    selected_extract_cols = st.multiselect(
+        "Columns to include in user extract",
+        options=extract_col_options,
+        default=extract_col_options,
+        help="This does not change the workbook. It only controls the handout/export columns.",
+    )
 
 active_extract_df = build_active_frequency_extract(
-    visual_df,
+    extract_source_df,
     selected_columns=selected_extract_cols,
     include_locked_status=extract_include_locked,
 )
