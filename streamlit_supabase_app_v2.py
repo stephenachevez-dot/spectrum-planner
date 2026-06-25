@@ -20,7 +20,7 @@ except Exception:
     px = None
     go = None
 
-, Circle
+,Circle
 
 try:
     import plotly.express as px
