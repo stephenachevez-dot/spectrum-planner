@@ -29,7 +29,7 @@ except Exception:
 st.set_page_config(page_title="Spectrum Planner V33 Better Map Views", layout="wide")
 
 # ============================================================
-# Spectrum Planner V33 — Better Map Views + Offline Radius Map
+# Spectrum Planner V34 — Tactical Ops Map + Offline Radius Map
 # ============================================================
 # Adds:
 # - Offline Radius Map default: no internet tiles / no Mapbox required.
@@ -1099,7 +1099,7 @@ def render_pydeck_map(df, color_by="Equipment", radius_units="meters", max_rows=
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V33")
+st.title("Spectrum Planner — V34")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
@@ -1371,7 +1371,7 @@ with st.expander("Extract / Export Visuals", expanded=True):
         if map_enabled:
             mc1, mc2, mc3, mc4 = st.columns(4)
             with mc1:
-                map_mode = st.selectbox("Map mode", ["Offline Radius Map", "Plotly Coordinate Map", "PyDeck Map"], index=0)
+                map_mode = st.selectbox("Map mode", ["Tactical Offline Ops Map", "Offline Radius Map", "Plotly Coordinate Map", "PyDeck Map"], index=0)
             with mc2:
                 map_color_by = st.selectbox("Map color by", ["Equipment", "Unit", "Sponsor", "Tech", "Tech Category"], index=0)
             with mc3:
@@ -1422,4 +1422,4 @@ with st.expander("Extract / Export Visuals", expanded=True):
         for name, b64 in st.session_state["saved_png_exports"].items():
             st.download_button(f"Download saved {name}", data=base64.b64decode(b64.encode("utf-8")), file_name=name, mime="image/png", use_container_width=True)
 
-st.caption("V33 note: Offline Radius Map is the default for restricted networks and does not require map tiles.")
+st.caption("V34 note: Tactical Offline Ops Map is the default for restricted networks and does not require map tiles.")
