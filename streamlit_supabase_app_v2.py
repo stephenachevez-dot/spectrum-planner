@@ -7,6 +7,7 @@ import hashlib
 from datetime import datetime, date, time
 
 import pandas as pd
+import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, Circle
@@ -94,24 +95,60 @@ def key_name(value) -> str:
 
 
 def to_json_safe(x):
+    """Convert any workbook value into strict JSON-safe data.
+
+    Supabase/PostgREST rejects NaN, Infinity, pandas NA, numpy scalar NaN,
+    and Excel time/date objects. This function removes all of them.
+    """
     if x is None:
         return None
+
+    # pandas/numpy missing values
     try:
         if pd.isna(x):
             return None
     except Exception:
         pass
-    if isinstance(x, float) and (math.isnan(x) or math.isinf(x)):
-        return None
+
+    # numpy scalar -> Python scalar
+    try:
+        if isinstance(x, np.generic):
+            x = x.item()
+    except Exception:
+        pass
+
+    # floats: reject NaN/Infinity
+    if isinstance(x, float):
+        if math.isnan(x) or math.isinf(x):
+            return None
+        return float(x)
+
+    # ints/bools/strings are safe
+    if isinstance(x, (int, bool, str)):
+        return x
+
+    # timestamps, Excel times, dates
     if isinstance(x, (pd.Timestamp, datetime, date, time)):
         return x.isoformat()
+
+    # anything with isoformat
     if hasattr(x, "isoformat"):
         try:
             return x.isoformat()
         except Exception:
             pass
-    return x
 
+    # lists/dicts: clean recursively
+    if isinstance(x, list):
+        return [to_json_safe(v) for v in x]
+    if isinstance(x, dict):
+        return {str(k): to_json_safe(v) for k, v in x.items()}
+
+    # final fallback
+    try:
+        return str(x)
+    except Exception:
+        return None
 
 def to_bool(value, default=True) -> bool:
     try:
@@ -303,15 +340,28 @@ def get_supabase_client():
 
 
 def workbook_to_jsonable(sheets):
+    """Convert full workbook into strict JSON-safe payload for Supabase."""
     payload = {}
     for name, df in sheets.items():
         clean = recalc_start_end_fast(df).copy()
-        for col in clean.columns:
-            clean[col] = clean[col].map(to_json_safe)
-        records = json.loads(json.dumps(clean.to_dict(orient="records"), allow_nan=False))
-        payload[name] = {"columns": list(clean.columns), "records": records}
-    return payload
 
+        # Make column names strings and remove unsafe values.
+        clean.columns = [str(c) for c in clean.columns]
+
+        records = dataframe_json_records(clean)
+
+        sheet_payload = {
+            "columns": [str(c) for c in clean.columns],
+            "records": records,
+        }
+
+        # Validate each sheet before saving.
+        json.dumps(sheet_payload, allow_nan=False)
+        payload[str(name)] = sheet_payload
+
+    # Validate whole workbook.
+    json.dumps(payload, allow_nan=False)
+    return payload
 
 def workbook_from_jsonable(payload):
     sheets = {}
@@ -334,20 +384,29 @@ def save_project(project_id, project_name, updated_by):
         return False, "Supabase is not configured."
     if not st.session_state.get("sheets"):
         return False, "No workbook is loaded."
-    row = {
-        "project_id": project_id.strip(),
-        "project_name": project_name.strip() or project_id.strip(),
-        "workbook": workbook_to_jsonable(st.session_state["sheets"]),
-        "png_exports": st.session_state.get("saved_png_exports", {}),
-        "updated_by": updated_by.strip() or "unknown",
-        "updated_at": datetime.utcnow().isoformat(),
-    }
+
     try:
+        workbook_payload = workbook_to_jsonable(st.session_state["sheets"])
+        png_payload = to_json_safe(st.session_state.get("saved_png_exports", {}))
+
+        row = {
+            "project_id": str(project_id).strip(),
+            "project_name": str(project_name).strip() or str(project_id).strip(),
+            "workbook": workbook_payload,
+            "png_exports": png_payload,
+            "updated_by": str(updated_by).strip() or "unknown",
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        # Final strict validation before Supabase call.
+        json.dumps(row, allow_nan=False)
+
         client.table("spectrum_projects").upsert(row, on_conflict="project_id").execute()
         return True, f"Saved project '{row['project_name']}'."
+    except ValueError as exc:
+        return False, f"Save failed: workbook still contains non-JSON value. Details: {exc}"
     except Exception as exc:
         return False, f"Save failed: {exc}"
-
 
 def load_project(project_id):
     client = get_supabase_client()
@@ -1097,7 +1156,7 @@ def render_pydeck_map(df, color_by="Equipment", radius_units="meters", max_rows=
 
 
 # ============================================================
-# V35 Tactical Map Full Controls
+# V37 Interactive LOS Tactical Map
 # ============================================================
 
 def band_label(center_mhz):
@@ -1346,11 +1405,334 @@ def build_animation_frames_pngs(source_df, hours, map_options):
     return exports
 
 
+
+# ============================================================
+# V37 Interactive Tactical LOS Map
+# ============================================================
+
+def los_group_value(row, match_by):
+    if match_by == "Equipment":
+        return label_value(row.get("Equipment", ""))
+    if match_by == "Tech":
+        return label_value(row.get("Tech", ""))
+    if match_by == "Unit":
+        return label_value(row.get("Unit", ""))
+    if match_by == "Frequency Band":
+        return band_label(row.get("Center MHz"))
+    return label_value(row.get("Equipment", ""))
+
+
+def selectable_system_label(row):
+    equip = label_value(row.get("Equipment", ""))
+    unit = label_value(row.get("Unit", ""))
+    tech = label_value(row.get("Tech", ""))
+    freq = row.get("Center MHz")
+    freq_txt = f"{freq:.3f} MHz" if isinstance(freq, (int, float)) and not math.isnan(freq) else "No Freq"
+    return f"{unit} | {equip} | {tech} | {freq_txt} | {row.get('lat'):.5f},{row.get('lon'):.5f}"
+
+
+def build_los_pairs(map_df, match_by="Equipment", selected_labels=None, max_pairs=300):
+    """Build LOS line pairs only between like systems.
+
+    This is geometric/coordination LOS only. It does not calculate terrain-blocked LOS
+    unless DEM/DTED elevation data is added in a future version.
+    """
+    if map_df.empty:
+        return []
+
+    working = map_df.copy()
+    working["_system_label"] = working.apply(selectable_system_label, axis=1)
+    working["_los_group"] = working.apply(lambda r: los_group_value(r, match_by), axis=1)
+
+    if selected_labels:
+        working = working[working["_system_label"].isin(selected_labels)].copy()
+
+    rows = working.to_dict(orient="records")
+    pairs = []
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            if rows[i].get("_los_group") != rows[j].get("_los_group"):
+                continue
+            pairs.append((rows[i], rows[j]))
+            if len(pairs) >= max_pairs:
+                return pairs
+    return pairs
+
+
+def plotly_interactive_tactical_map_v37(
+    map_df,
+    map_layer="Offline Grid",
+    show_radius=True,
+    show_labels=True,
+    color_mode="Frequency Band",
+    show_overlap_warning=True,
+    show_congestion_heat=True,
+    selected_hour=None,
+    show_all_hours=True,
+    los_enabled=False,
+    los_match_by="Equipment",
+    selected_los_labels=None,
+):
+    if go is None:
+        st.warning("Plotly is not installed. Add plotly to requirements.txt for zoom/pan tactical map.")
+        return None
+
+    if map_df.empty:
+        st.info("No valid Latitude/Longitude rows available for the interactive tactical map.")
+        return None
+
+    working = map_df.copy()
+    if "Band" not in working.columns:
+        working["Band"] = working["Center MHz"].apply(band_label)
+
+    # Color selection
+    if color_mode == "Frequency Band":
+        working["_color"] = working["Center MHz"].apply(band_color)
+        legend_group = "Band"
+    elif color_mode == "Unit":
+        working["_color"] = working["Unit"].apply(stable_color)
+        legend_group = "Unit"
+    elif color_mode == "Sponsor":
+        working["_color"] = working["Sponsor"].apply(stable_color)
+        legend_group = "Sponsor"
+    elif color_mode == "Tech":
+        working["_color"] = working["Tech"].apply(stable_color)
+        legend_group = "Tech"
+    else:
+        working["_color"] = working["Equipment"].apply(stable_color)
+        legend_group = "Equipment"
+
+    working["_label"] = working.apply(selectable_system_label, axis=1)
+    working["_hover"] = working.apply(
+        lambda r: (
+            f"<b>{r.get('Equipment','')}</b><br>"
+            f"Unit: {r.get('Unit','')}<br>"
+            f"Tech: {r.get('Tech','')}<br>"
+            f"Band: {r.get('Band','')}<br>"
+            f"Freq: {r.get('Center MHz','')} MHz<br>"
+            f"Power: {r.get('Power_W','')} W<br>"
+            f"Time: {r.get('Time','')}<br>"
+            f"Radius: {r.get('Radius','')} {r.get('Radius Units','')}"
+        ),
+        axis=1,
+    )
+
+    fig = go.Figure()
+
+    # Offline visual layer background.
+    bg = "#F8FAFC"
+    grid_color = "#CBD5E1"
+    if map_layer == "Satellite":
+        bg = "#1F2937"
+        grid_color = "#64748B"
+    elif map_layer == "Military Topographic":
+        bg = "#ECFCCB"
+        grid_color = "#84CC16"
+    elif map_layer == "Street Map":
+        bg = "#E0F2FE"
+        grid_color = "#93C5FD"
+
+    # Congestion heat as a density-like 2D histogram.
+    if show_congestion_heat and len(working) >= 2:
+        fig.add_trace(
+            go.Histogram2dContour(
+                x=working["lon"],
+                y=working["lat"],
+                colorscale="Reds",
+                showscale=False,
+                opacity=0.28,
+                contours=dict(showlines=False),
+                hoverinfo="skip",
+                name="Congestion Heat",
+            )
+        )
+
+    # RF coverage circles as Plotly shapes.
+    shapes = []
+    if show_radius:
+        for _, row in working.iterrows():
+            radius_m = to_float(row.get("radius_m"), 0.0)
+            if radius_m <= 0:
+                continue
+            lat = row["lat"]
+            lon = row["lon"]
+            r_lat = radius_to_degrees_lat(radius_m)
+            denom = 111320.0 * max(math.cos(math.radians(lat)), 0.15)
+            r_lon = radius_m / denom
+            color = row["_color"]
+            shapes.append(
+                dict(
+                    type="circle",
+                    xref="x",
+                    yref="y",
+                    x0=lon - r_lon,
+                    x1=lon + r_lon,
+                    y0=lat - r_lat,
+                    y1=lat + r_lat,
+                    fillcolor=color,
+                    opacity=0.12,
+                    line=dict(color=color, width=1),
+                    layer="below",
+                )
+            )
+
+    # Red overlap warning lines.
+    if show_overlap_warning and show_radius:
+        rows = working.to_dict(orient="records")
+        shown = 0
+        for i in range(len(rows)):
+            for j in range(i + 1, len(rows)):
+                ca = to_float(rows[i].get("Center MHz"))
+                cb = to_float(rows[j].get("Center MHz"))
+                freq_close = ca is not None and cb is not None and abs(ca - cb) <= 10.0
+                if freq_close and circles_overlap_v35(rows[i], rows[j]):
+                    fig.add_trace(
+                        go.Scatter(
+                            x=[rows[i]["lon"], rows[j]["lon"]],
+                            y=[rows[i]["lat"], rows[j]["lat"]],
+                            mode="lines",
+                            line=dict(color="red", width=2),
+                            opacity=0.55,
+                            hoverinfo="skip",
+                            showlegend=False,
+                            name="Interference overlap",
+                        )
+                    )
+                    shown += 1
+                    if shown >= 300:
+                        break
+            if shown >= 300:
+                break
+
+    # LOS lines: only like systems, selectable.
+    los_pairs = []
+    if los_enabled:
+        los_pairs = build_los_pairs(
+            working,
+            match_by=los_match_by,
+            selected_labels=selected_los_labels,
+            max_pairs=300,
+        )
+        for a, b in los_pairs:
+            fig.add_trace(
+                go.Scatter(
+                    x=[a["lon"], b["lon"]],
+                    y=[a["lat"], b["lat"]],
+                    mode="lines",
+                    line=dict(color="#22C55E", width=2, dash="dot"),
+                    opacity=0.75,
+                    hovertext=f"LOS candidate<br>{a.get('Equipment')} ↔ {b.get('Equipment')}<br>Matched by {los_match_by}: {los_group_value(a, los_match_by)}",
+                    hoverinfo="text",
+                    showlegend=False,
+                    name="LOS candidate",
+                )
+            )
+
+    # Points grouped for legend.
+    for group_name, group_df in working.groupby(legend_group):
+        fig.add_trace(
+            go.Scatter(
+                x=group_df["lon"],
+                y=group_df["lat"],
+                mode="markers+text" if show_labels else "markers",
+                marker=dict(
+                    size=group_df["Power_W"].apply(lambda x: max(10, min(28, 10 + to_float(x, 1.0) * 1.4))),
+                    color=group_df["_color"],
+                    line=dict(color="black", width=1),
+                    symbol="circle",
+                ),
+                text=group_df.apply(lambda r: f"{r.get('Unit','')}<br>{r.get('Equipment','')}", axis=1) if show_labels else None,
+                textposition="top center",
+                hovertext=group_df["_hover"],
+                hoverinfo="text",
+                name=str(group_name),
+            )
+        )
+
+    min_lat, max_lat = working["lat"].min(), working["lat"].max()
+    min_lon, max_lon = working["lon"].min(), working["lon"].max()
+    lat_span = max(max_lat - min_lat, 0.01)
+    lon_span = max(max_lon - min_lon, 0.01)
+
+    time_note = "All hours" if show_all_hours else f"{selected_hour:0.2f} hour"
+    fig.update_layout(
+        title=f"Interactive Tactical Map — {map_layer} — {time_note}",
+        height=750,
+        plot_bgcolor=bg,
+        paper_bgcolor="white",
+        shapes=shapes,
+        legend=dict(orientation="v"),
+        margin=dict(l=10, r=10, t=50, b=10),
+        dragmode="pan",
+    )
+    fig.update_xaxes(
+        title="Longitude",
+        range=[min_lon - lon_span * 0.3, max_lon + lon_span * 0.3],
+        showgrid=True,
+        gridcolor=grid_color,
+        zeroline=False,
+    )
+    fig.update_yaxes(
+        title="Latitude",
+        range=[min_lat - lat_span * 0.3, max_lat + lat_span * 0.3],
+        showgrid=True,
+        gridcolor=grid_color,
+        scaleanchor="x",
+        scaleratio=1,
+        zeroline=False,
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={
+            "scrollZoom": True,
+            "displayModeBar": True,
+            "modeBarButtonsToAdd": ["drawline", "drawrect", "eraseshape"],
+            "toImageButtonOptions": {"format": "png", "filename": "interactive_tactical_map"},
+        },
+    )
+
+    if los_enabled:
+        st.caption(f"LOS candidates displayed: {len(los_pairs)}. LOS is limited to like systems matched by {los_match_by}. Terrain-blocked LOS still requires elevation data.")
+    else:
+        st.caption("Zoom/pan enabled. Use the camera button in the Plotly toolbar to export PNG.")
+
+    return fig
+
+
+def los_selection_controls(map_df, match_by):
+    if map_df.empty:
+        return []
+    temp = map_df.copy()
+    temp["_system_label"] = temp.apply(selectable_system_label, axis=1)
+    temp["_los_group"] = temp.apply(lambda r: los_group_value(r, match_by), axis=1)
+
+    groups = sorted(temp["_los_group"].dropna().unique().tolist())
+    chosen_groups = st.multiselect(
+        f"Choose {match_by} group(s) for LOS",
+        options=groups,
+        default=groups[:1] if groups else [],
+        help="LOS candidates will only be drawn between systems in the same selected group.",
+    )
+
+    filtered = temp[temp["_los_group"].isin(chosen_groups)].copy()
+    labels = filtered["_system_label"].tolist()
+
+    selected_labels = st.multiselect(
+        "Choose systems for LOS",
+        options=labels,
+        default=labels[: min(len(labels), 6)],
+        help="Select specific systems. LOS lines will only be drawn between selected like systems.",
+    )
+    return selected_labels
+
+
 # ============================================================
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V35")
+st.title("Spectrum Planner — V37")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
@@ -1617,12 +1999,12 @@ with st.expander("Extract / Export Visuals", expanded=True):
 
         st.divider()
         st.subheader("Tactical Map Under Current Visual")
-        st.caption("V35 controls are visible here: map layer, RF coverage, unit icons, frequency bands, red overlap warnings, congestion heat, hour replay, and PNG animation frames.")
+        st.caption("V36 controls are visible here: map layer, RF coverage, unit icons, frequency bands, red overlap warnings, congestion heat, hour replay, and PNG animation frames.")
         map_enabled = st.checkbox("Enable map rendering", value=False, key=f"map_enabled_{active_sheet}")
         if map_enabled:
             mc1, mc2, mc3, mc4 = st.columns(4)
             with mc1:
-                map_mode = st.selectbox("Map mode", ["Tactical Offline Ops Map", "Offline Radius Map", "Plotly Coordinate Map", "PyDeck Map"], index=0)
+                map_mode = st.selectbox("Map mode", ["Interactive Tactical Map", "Tactical Offline Ops Map", "Offline Radius Map", "Plotly Coordinate Map", "PyDeck Map"], index=0)
             with mc2:
                 map_color_by = st.selectbox("Map color by", ["Equipment", "Unit", "Sponsor", "Tech", "Tech Category"], index=0)
             with mc3:
@@ -1632,7 +2014,64 @@ with st.expander("Extract / Export Visuals", expanded=True):
 
             show_radius = st.checkbox("Show RF coverage circles", value=True)
 
-            if map_mode == "Tactical Offline Ops Map":
+            if map_mode == "Interactive Tactical Map":
+                st.markdown("**Interactive Tactical Map Controls**")
+                t1, t2, t3, t4 = st.columns(4)
+                with t1:
+                    map_layer = st.selectbox("Map layer", ["Offline Grid", "Street Map", "Satellite", "Military Topographic"], index=0)
+                with t2:
+                    color_mode = st.selectbox("Color by", ["Equipment", "Unit", "Sponsor", "Tech", "Frequency Band"], index=4)
+                with t3:
+                    show_labels = st.checkbox("Unit labels", value=True)
+                with t4:
+                    show_congestion_heat = st.checkbox("Congestion heat map", value=True)
+
+                t5, t6, t7 = st.columns(3)
+                with t5:
+                    show_overlap_warning = st.checkbox("Interference overlap shown in red", value=True)
+                with t6:
+                    los_enabled = st.checkbox("Enable LOS candidates", value=False)
+                with t7:
+                    los_match_by = st.selectbox("LOS only between like systems by", ["Equipment", "Tech", "Unit", "Frequency Band"], index=0)
+
+                time_control = st.checkbox("Hour-by-hour replay slider", value=False, key=f"interactive_time_{active_sheet}")
+                if time_control:
+                    selected_hour = st.slider("Replay exercise hour", 0.0, 24.0, 6.0, 0.25, key=f"interactive_hour_{active_sheet}")
+                    show_all_hours = False
+                else:
+                    selected_hour = None
+                    show_all_hours = True
+
+                map_df = build_map_df_v35(
+                    visual_df,
+                    color_by=map_color_by,
+                    radius_units=radius_units,
+                    max_rows=int(max_map_rows),
+                    selected_hour=selected_hour,
+                    show_all_hours=show_all_hours,
+                )
+
+                selected_los_labels = []
+                if los_enabled and not map_df.empty:
+                    with st.expander("Select systems for LOS", expanded=True):
+                        selected_los_labels = los_selection_controls(map_df, los_match_by)
+
+                plotly_interactive_tactical_map_v37(
+                    map_df,
+                    map_layer=map_layer,
+                    show_radius=show_radius,
+                    show_labels=show_labels,
+                    color_mode=color_mode,
+                    show_overlap_warning=show_overlap_warning,
+                    show_congestion_heat=show_congestion_heat,
+                    selected_hour=selected_hour,
+                    show_all_hours=show_all_hours,
+                    los_enabled=los_enabled,
+                    los_match_by=los_match_by,
+                    selected_los_labels=selected_los_labels,
+                )
+
+            elif map_mode == "Tactical Offline Ops Map":
                 st.markdown("**Tactical Map Full Controls**")
                 t1, t2, t3, t4 = st.columns(4)
                 with t1:
