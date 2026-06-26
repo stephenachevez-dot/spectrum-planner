@@ -2471,4 +2471,4 @@ with st.expander("Extract / Export Visuals", expanded=True):
         for name, b64 in st.session_state["saved_png_exports"].items():
             st.download_button(f"Download saved {name}", data=base64.b64decode(b64.encode("utf-8")), file_name=name, mime="image/png", use_container_width=True)
 
-st.caption("V34 note: Tactical Offline Ops Map is the default for restricted networks and does not require map tiles.")
+st.caption("45 note: Tactical Offline Ops Map is the default for restricted networks and does not require map tiles.")
