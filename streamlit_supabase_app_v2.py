@@ -2288,7 +2288,7 @@ with st.expander("Extract / Export Visuals", expanded=True):
 
                 if globals().get("go", None) is None:
                     st.warning("Interactive Tactical Map requires Plotly. Add `plotly` to requirements.txt, then redeploy. Falling back to Tactical Offline Ops Map below.")
-                    fallback_fig = tactical_ops_map_v35(
+                    fallback_fig = tactical_ops_map_v45(
                         map_df,
                         map_layer=map_layer,
                         show_radius=show_radius,
@@ -2349,7 +2349,7 @@ with st.expander("Extract / Export Visuals", expanded=True):
                     selected_hour = None
                     show_all_hours = True
 
-                map_df = build_map_df_v35(
+                map_df = build_map_df_v45(
                     visual_df,
                     color_by=map_color_by,
                     radius_units=radius_units,
@@ -2361,7 +2361,7 @@ with st.expander("Extract / Export Visuals", expanded=True):
                 if map_df.empty:
                     st.info("No valid Latitude/Longitude rows available for the tactical map.")
                 else:
-                    map_fig = tactical_ops_map_v35(
+                    map_fig = tactical_ops_map_v45(
                         map_df,
                         map_layer=map_layer,
                         show_radius=show_radius,
