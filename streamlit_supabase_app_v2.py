@@ -1626,7 +1626,7 @@ def plotly_interactive_tactical_map_v38(
                 ca = to_float(rows[i].get("Center MHz"))
                 cb = to_float(rows[j].get("Center MHz"))
                 freq_close = ca is not None and cb is not None and abs(ca - cb) <= 10.0
-                if freq_close and circles_overlap_v35(rows[i], rows[j]):
+                if freq_close and circles_overlap_v45(rows[i], rows[j]):
                     fig.add_trace(
                         plotly_go.Scatter(
                             x=[rows[i]["lon"], rows[j]["lon"]],
@@ -2304,7 +2304,7 @@ with st.expander("Extract / Export Visuals", expanded=True):
                     )
                     st.pyplot(fallback_fig, use_container_width=True)
                 else:
-                    plotly_interactive_tactical_map_v38(
+                    plotly_interactive_tactical_map_v45(
                         map_df,
                         map_layer=map_layer,
                         show_radius=show_radius,
