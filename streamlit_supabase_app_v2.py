@@ -2272,7 +2272,7 @@ with st.expander("Extract / Export Visuals", expanded=True):
                     selected_hour = None
                     show_all_hours = True
 
-                map_df = build_map_df_v35(
+                map_df = build_map_df_v45(
                     visual_df,
                     color_by=map_color_by,
                     radius_units=radius_units,
