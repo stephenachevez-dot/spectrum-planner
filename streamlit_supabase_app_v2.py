@@ -32,10 +32,10 @@ try:
 except Exception:
     create_client = None
 
-st.set_page_config(page_title="Spectrum Planner V44", layout="wide")
+st.set_page_config(page_title="Spectrum Planner V33 Better Map Views", layout="wide")
 
 # ============================================================
-# Spectrum Planner V34 — Tactical Ops Map + Offline Radius Map
+# Spectrum Planner V45
 # ============================================================
 # Adds:
 # - Offline Radius Map default: no internet tiles / no Mapbox required.
@@ -1246,7 +1246,7 @@ def build_time_filtered_df(df, selected_hour=None, show_all_hours=True):
     return working[pd.Series(keep, index=working.index)].copy()
 
 
-def circles_overlap_v35(row_a, row_b):
+def circles_overlap_v45(row_a, row_b):
     lat1, lon1, r1 = row_a["lat"], row_a["lon"], to_float(row_a.get("radius_m"), 0.0)
     lat2, lon2, r2 = row_b["lat"], row_b["lon"], to_float(row_b.get("radius_m"), 0.0)
     if r1 <= 0 or r2 <= 0:
@@ -1258,7 +1258,7 @@ def circles_overlap_v35(row_a, row_b):
     return dist <= (r1 + r2)
 
 
-def build_map_df_v35(df, color_by="Equipment", radius_units="meters", max_rows=300, selected_hour=None, show_all_hours=True):
+def build_map_df_v45(df, color_by="Equipment", radius_units="meters", max_rows=300, selected_hour=None, show_all_hours=True):
     filtered = build_time_filtered_df(df, selected_hour=selected_hour, show_all_hours=show_all_hours)
     out = build_map_df(filtered, color_by=color_by, radius_units=radius_units, max_rows=max_rows)
     if not out.empty:
@@ -1267,7 +1267,7 @@ def build_map_df_v35(df, color_by="Equipment", radius_units="meters", max_rows=3
     return out
 
 
-def tactical_ops_map_v35(
+def tactical_ops_map_v45(
     map_df,
     map_layer="Offline Grid",
     show_radius=True,
@@ -1465,20 +1465,27 @@ def selectable_system_label(row):
 
 
 def build_los_pairs(map_df, match_by="Equipment", selected_labels=None, max_pairs=300):
-    """Build LOS line pairs only between like systems.
+    """Build LOS/link pairs only from user-selected systems and only between like systems.
 
-    This is geometric/coordination LOS only. It does not calculate terrain-blocked LOS
-    unless DEM/DTED elevation data is added in a future version.
+    Important behavior:
+    - No selected systems = no LOS/link lines.
+    - One selected system = no LOS/link lines.
+    - Two or more selected systems = draw only between selected systems that match by Equipment/Tech/Unit/Frequency Band.
+    - This is a planning/link candidate line, not terrain-blocked LOS. True terrain LOS requires DEM/DTED.
     """
     if map_df.empty:
+        return []
+
+    if not selected_labels or len(selected_labels) < 2:
         return []
 
     working = map_df.copy()
     working["_system_label"] = working.apply(selectable_system_label, axis=1)
     working["_los_group"] = working.apply(lambda r: los_group_value(r, match_by), axis=1)
+    working = working[working["_system_label"].isin(selected_labels)].copy()
 
-    if selected_labels:
-        working = working[working["_system_label"].isin(selected_labels)].copy()
+    if len(working) < 2:
+        return []
 
     rows = working.to_dict(orient="records")
     pairs = []
@@ -1728,7 +1735,7 @@ def plotly_interactive_tactical_map_v38(
     )
 
     if los_enabled:
-        st.caption(f"LOS candidates displayed: {len(los_pairs)}. LOS is limited to like systems matched by {los_match_by}. Terrain-blocked LOS still requires elevation data.")
+        st.caption(f"LOS/link lines displayed: {len(los_pairs)}. Lines are manually selected and limited to like systems matched by {los_match_by}. Terrain-blocked LOS still requires elevation data.")
     else:
         st.caption("Zoom/pan enabled. Use the camera button in the Plotly toolbar to export PNG.")
 
@@ -1738,27 +1745,34 @@ def plotly_interactive_tactical_map_v38(
 def los_selection_controls(map_df, match_by):
     if map_df.empty:
         return []
+
     temp = map_df.copy()
     temp["_system_label"] = temp.apply(selectable_system_label, axis=1)
     temp["_los_group"] = temp.apply(lambda r: los_group_value(r, match_by), axis=1)
 
     groups = sorted(temp["_los_group"].dropna().unique().tolist())
     chosen_groups = st.multiselect(
-        f"Choose {match_by} group(s) for LOS",
+        f"Filter LOS systems by {match_by} group",
         options=groups,
-        default=groups[:1] if groups else [],
-        help="LOS candidates will only be drawn between systems in the same selected group.",
+        default=[],
+        help="Optional filter. Leave blank to see all systems, or choose one group to limit the list.",
     )
 
-    filtered = temp[temp["_los_group"].isin(chosen_groups)].copy()
+    if chosen_groups:
+        filtered = temp[temp["_los_group"].isin(chosen_groups)].copy()
+    else:
+        filtered = temp.copy()
+
     labels = filtered["_system_label"].tolist()
 
     selected_labels = st.multiselect(
-        "Choose systems for LOS",
+        "Choose systems to draw LOS/link lines",
         options=labels,
-        default=labels[: min(len(labels), 6)],
-        help="Select specific systems. LOS lines will only be drawn between selected like systems.",
+        default=[],
+        help="No lines are drawn until you manually choose at least two systems. Lines are still limited to like systems.",
     )
+
+    st.caption(f"Selected systems: {len(selected_labels)}. LOS/link lines will only draw between selected systems that match by {match_by}.")
     return selected_labels
 
 
@@ -1768,12 +1782,12 @@ def los_selection_controls(map_df, match_by):
 # ============================================================
 
 ACTIVE_EXTRACT_DEFAULT_COLUMNS = [
+    "Start Time",
+    "End Time",
     "Unit",
     "Sponsor",
     "Equipment",
     "Tech",
-    "Start Time",
-    "End Time",
     "Start Frequency (MHz)",
     "Center Frequency (MHz)",
     "End Frequency (MHz)",
@@ -1864,7 +1878,7 @@ def active_frequency_text_summary(df, max_rows=200):
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V44")
+st.title("Spectrum Planner — V45")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
@@ -2246,9 +2260,9 @@ with st.expander("Extract / Export Visuals", expanded=True):
                 with t5:
                     show_overlap_warning = st.checkbox("Interference overlap shown in red", value=True)
                 with t6:
-                    los_enabled = st.checkbox("Enable LOS candidates", value=False)
+                    los_enabled = st.checkbox("Show LOS/link lines", value=False, help="Default is off. Turn on only when you want to manually draw selected point-to-point lines.")
                 with t7:
-                    los_match_by = st.selectbox("LOS only between like systems by", ["Equipment", "Tech", "Unit", "Frequency Band"], index=0)
+                    los_match_by = st.selectbox("Only draw LOS/link between like systems by", ["Equipment", "Tech", "Unit", "Frequency Band"], index=0)
 
                 time_control = st.checkbox("Hour-by-hour replay slider", value=False, key=f"interactive_time_{active_sheet}")
                 if time_control:
@@ -2269,7 +2283,7 @@ with st.expander("Extract / Export Visuals", expanded=True):
 
                 selected_los_labels = []
                 if los_enabled and not map_df.empty:
-                    with st.expander("Select systems for LOS", expanded=True):
+                    with st.expander("Select systems for LOS/link lines", expanded=True):
                         selected_los_labels = los_selection_controls(map_df, los_match_by)
 
                 if globals().get("go", None) is None:
