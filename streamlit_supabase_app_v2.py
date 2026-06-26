@@ -32,10 +32,10 @@ try:
 except Exception:
     create_client = None
 
-st.set_page_config(page_title="Spectrum Planner V45", layout="wide")
+st.set_page_config(page_title="Spectrum Planner V46", layout="wide")
 
 # ============================================================
-# Spectrum Planner V45
+# Spectrum Planner V34 — Tactical Ops Map + Offline Radius Map
 # ============================================================
 # Adds:
 # - Offline Radius Map default: no internet tiles / no Mapbox required.
@@ -1246,7 +1246,7 @@ def build_time_filtered_df(df, selected_hour=None, show_all_hours=True):
     return working[pd.Series(keep, index=working.index)].copy()
 
 
-def circles_overlap_v45(row_a, row_b):
+def circles_overlap_v35(row_a, row_b):
     lat1, lon1, r1 = row_a["lat"], row_a["lon"], to_float(row_a.get("radius_m"), 0.0)
     lat2, lon2, r2 = row_b["lat"], row_b["lon"], to_float(row_b.get("radius_m"), 0.0)
     if r1 <= 0 or r2 <= 0:
@@ -1258,7 +1258,7 @@ def circles_overlap_v45(row_a, row_b):
     return dist <= (r1 + r2)
 
 
-def build_map_df_v45(df, color_by="Equipment", radius_units="meters", max_rows=300, selected_hour=None, show_all_hours=True):
+def make_map_df_v35(df, color_by="Equipment", radius_units="meters", max_rows=300, selected_hour=None, show_all_hours=True):
     filtered = build_time_filtered_df(df, selected_hour=selected_hour, show_all_hours=show_all_hours)
     out = build_map_df(filtered, color_by=color_by, radius_units=radius_units, max_rows=max_rows)
     if not out.empty:
@@ -1267,7 +1267,7 @@ def build_map_df_v45(df, color_by="Equipment", radius_units="meters", max_rows=3
     return out
 
 
-def tactical_ops_map_v45(
+def tactical_ops_map_v35(
     map_df,
     map_layer="Offline Grid",
     show_radius=True,
@@ -1411,7 +1411,7 @@ def tactical_ops_map_v45(
 def build_animation_frames_pngs(source_df, hours, map_options):
     exports = {}
     for hour in hours:
-        frame_map_df = build_map_df_v35(
+        frame_map_df = make_map_df_v35(
             source_df,
             color_by=map_options["map_color_by"],
             radius_units=map_options["radius_units"],
@@ -1626,7 +1626,7 @@ def plotly_interactive_tactical_map_v38(
                 ca = to_float(rows[i].get("Center MHz"))
                 cb = to_float(rows[j].get("Center MHz"))
                 freq_close = ca is not None and cb is not None and abs(ca - cb) <= 10.0
-                if freq_close and circles_overlap_v45(rows[i], rows[j]):
+                if freq_close and circles_overlap_v35(rows[i], rows[j]):
                     fig.add_trace(
                         plotly_go.Scatter(
                             x=[rows[i]["lon"], rows[j]["lon"]],
@@ -1878,7 +1878,7 @@ def active_frequency_text_summary(df, max_rows=200):
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V45")
+st.title("Spectrum Planner — V46")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
@@ -2272,7 +2272,7 @@ with st.expander("Extract / Export Visuals", expanded=True):
                     selected_hour = None
                     show_all_hours = True
 
-                map_df = build_map_df_v45(
+                map_df = make_map_df_v35(
                     visual_df,
                     color_by=map_color_by,
                     radius_units=radius_units,
@@ -2288,7 +2288,7 @@ with st.expander("Extract / Export Visuals", expanded=True):
 
                 if globals().get("go", None) is None:
                     st.warning("Interactive Tactical Map requires Plotly. Add `plotly` to requirements.txt, then redeploy. Falling back to Tactical Offline Ops Map below.")
-                    fallback_fig = tactical_ops_map_v45(
+                    fallback_fig = tactical_ops_map_v35(
                         map_df,
                         map_layer=map_layer,
                         show_radius=show_radius,
@@ -2304,7 +2304,7 @@ with st.expander("Extract / Export Visuals", expanded=True):
                     )
                     st.pyplot(fallback_fig, use_container_width=True)
                 else:
-                    plotly_interactive_tactical_map_v45(
+                    plotly_interactive_tactical_map_v38(
                         map_df,
                         map_layer=map_layer,
                         show_radius=show_radius,
@@ -2349,7 +2349,7 @@ with st.expander("Extract / Export Visuals", expanded=True):
                     selected_hour = None
                     show_all_hours = True
 
-                map_df = build_map_df_v45(
+                map_df = make_map_df_v35(
                     visual_df,
                     color_by=map_color_by,
                     radius_units=radius_units,
@@ -2361,7 +2361,7 @@ with st.expander("Extract / Export Visuals", expanded=True):
                 if map_df.empty:
                     st.info("No valid Latitude/Longitude rows available for the tactical map.")
                 else:
-                    map_fig = tactical_ops_map_v45(
+                    map_fig = tactical_ops_map_v35(
                         map_df,
                         map_layer=map_layer,
                         show_radius=show_radius,
@@ -2471,4 +2471,4 @@ with st.expander("Extract / Export Visuals", expanded=True):
         for name, b64 in st.session_state["saved_png_exports"].items():
             st.download_button(f"Download saved {name}", data=base64.b64decode(b64.encode("utf-8")), file_name=name, mime="image/png", use_container_width=True)
 
-st.caption("45 note: Tactical Offline Ops Map is the default for restricted networks and does not require map tiles.")
+st.caption("V46 note: Tactical Offline Ops Map is the default for restricted networks and does not require map tiles.")
