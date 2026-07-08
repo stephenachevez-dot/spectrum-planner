@@ -32,10 +32,10 @@ try:
 except Exception:
     create_client = None
 
-st.set_page_config(page_title="Spectrum Planner V49", layout="wide")
+st.set_page_config(page_title="Spectrum Planner V50", layout="wide")
 
 # ============================================================
-# Spectrum Planner V49 — Tactical Ops Map + Offline Radius Map
+# Spectrum Planner V50 — Tactical Ops Map + Offline Radius Map
 # ============================================================
 # Adds:
 # - Offline Radius Map default: no internet tiles / no Mapbox required.
@@ -1871,7 +1871,7 @@ def active_frequency_text_summary(df, max_rows=200):
 
 
 # ============================================================
-# V49 Number Input Type Fix
+# V50 Data Editor Mixed Type Fix
 # ============================================================
 
 DECIMAL_FREQUENCY_COLUMNS = [
@@ -2045,11 +2045,62 @@ def add_color_palette_sidebar_controls():
     return palette_name, min_distance, outline_width
 
 
+
+# ============================================================
+# V50 Data Editor Mixed Type Fix
+# ============================================================
+
+def prepare_dataframe_for_editor(df):
+    """Fix mixed-type columns before Streamlit data_editor renders."""
+    out = normalize_columns(df.copy(), add_missing=True)
+
+    numeric_cols = [
+        "Start Frequency (MHz)", "Center Frequency (MHz)", "End Frequency (MHz)",
+        "Bandwidth (MHz)", "Power (W)", "Power (dBm)",
+        "Latitude", "Longitude", "Coverage Radius", "Antenna Height",
+    ]
+
+    for col in numeric_cols:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").astype("float64")
+
+    for col in ["Active", "Locked"]:
+        if col in out.columns:
+            out[col] = out[col].apply(lambda v: to_bool(v, True if col == "Active" else False)).astype(bool)
+
+    for col in ["Start Time", "End Time", "Start Date", "End Date"]:
+        if col in out.columns:
+            out[col] = out[col].apply(lambda v: "" if pd.isna(v) else str(v))
+
+    for col in out.columns:
+        if col not in numeric_cols and col not in ["Active", "Locked"]:
+            out[col] = out[col].where(pd.notna(out[col]), "")
+
+    return out
+
+
+def safe_decimal_editor_config(df):
+    """Decimal-friendly editor configuration without mixed-type crashes."""
+    cfg = {}
+    for col in df.columns:
+        if col in ["Start Frequency (MHz)", "Center Frequency (MHz)", "End Frequency (MHz)"]:
+            cfg[col] = st.column_config.NumberColumn(col, step=0.0001, format="%.4f")
+        elif col == "Bandwidth (MHz)":
+            cfg[col] = st.column_config.NumberColumn(col, min_value=0.0, step=0.0001, format="%.4f")
+        elif col in ["Power (W)", "Power (dBm)", "Latitude", "Longitude", "Coverage Radius", "Antenna Height"]:
+            cfg[col] = st.column_config.NumberColumn(col, step=0.0001, format="%.4f")
+        elif col in ["Active", "Locked"]:
+            cfg[col] = st.column_config.CheckboxColumn(col)
+        elif col in ["Start Time", "End Time", "Start Date", "End Date"]:
+            cfg[col] = st.column_config.TextColumn(col)
+    return cfg
+
+
 # ============================================================
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V49")
+st.title("Spectrum Planner — V50")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
@@ -2155,12 +2206,13 @@ current_df = recalc_start_end_fast(st.session_state["sheets"][active_sheet].copy
 st.subheader("Shared allocation workbook")
 st.caption("Use Active to turn rows on/off. Use Locked to prevent Smart Planner from moving that row.")
 editor_key = f"editor_{active_sheet}_{st.session_state.get('planner_applied_at', 'base')}_{st.session_state.get('visual_version', 0)}"
+editor_df = prepare_dataframe_for_editor(current_df)
 edited_df = st.data_editor(
-    current_df,
+    editor_df,
     use_container_width=True,
     hide_index=True,
     num_rows="dynamic",
-    column_config=decimal_editor_config(current_df),
+    column_config=safe_decimal_editor_config(editor_df),
     key=f"editor_{active_sheet}_{st.session_state.get('planner_applied_at', 'base')}",
 )
 edited_df = enforce_decimal_numeric_columns(edited_df)
