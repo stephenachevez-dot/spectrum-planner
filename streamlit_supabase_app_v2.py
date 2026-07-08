@@ -32,7 +32,7 @@ try:
 except Exception:
     create_client = None
 
-st.set_page_config(page_title="Spectrum Planner V46", layout="wide")
+st.set_page_config(page_title="Spectrum Planner V33 Better Map Views", layout="wide")
 
 # ============================================================
 # Spectrum Planner V34 — Tactical Ops Map + Offline Radius Map
@@ -54,10 +54,10 @@ APP_COLUMNS = [
 ]
 
 PALETTE = [
-    "#2563EB", "#F97316", "#22C55E", "#EAB308", "#A855F7", "#EF4444", "#06B6D4", "#84CC16",
-    "#EC4899", "#8B5CF6", "#14B8A6", "#F59E0B", "#0EA5E9", "#F43F5E", "#64748B", "#6366F1",
-    "#15803D", "#C2410C", "#A16207", "#7C3AED", "#0F766E", "#B45309", "#0369A1", "#BE185D",
-    "#334155",
+    "#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9",
+    "#F0E442", "#000000", "#7E57C2", "#00838F", "#C62828", "#558B2F",
+    "#6D4C41", "#AD1457", "#1565C0", "#EF6C00", "#2E7D32", "#5D4037",
+    "#4527A0", "#0277BD", "#9E9D24", "#B71C1C", "#00695C", "#8E24AA",
 ]
 
 RENAME_MAP = {
@@ -691,7 +691,7 @@ def clear_stored_analysis(sheet_name):
 
 
 def update_active_sheet_in_session(sheet_name, df):
-    saved = recalc_start_end_fast(df).copy()
+    saved = recalc_start_end_fast(enforce_decimal_numeric_columns(df)).copy()
     st.session_state["sheets"][sheet_name] = saved
     st.session_state["last_autosave_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.session_state["visual_version"] = st.session_state.get("visual_version", 0) + 1
@@ -765,13 +765,8 @@ def visual_frequency_options(df):
 def build_color_map(df: pd.DataFrame, color_by: str) -> dict:
     if color_by is None or color_by not in df.columns:
         return {}
-    labels = []
-    for value in df[color_by].fillna("(blank)").astype(str).tolist():
-        lab = label_value(value)
-        if lab not in labels:
-            labels.append(lab)
-    return {lab: stable_color(lab) for lab in labels}
-
+    palette_name = st.session_state.get("palette_name_v48", "Colorblind Distinct")
+    return build_color_map_v48(df, color_by, palette_name=palette_name)
 
 def pick_color_field(df: pd.DataFrame, preferred="Equipment"):
     for col in [preferred, "Equipment", "Tech", "Unit", "Sponsor", "Tech Category", "Location"]:
@@ -867,7 +862,7 @@ def time_frequency_chart(df, color_by="Equipment", dark=True, title=None, sheet_
         group_label = label_value(row.get(color_by, "(blank)")) if color_by else "(blank)"
         color = color_map.get(group_label, stable_color(group_label))
         alpha = row_alpha(row, power_col, max_power, high_power_alpha, low_power_alpha)
-        ax.add_patch(Rectangle((center - bw / 2.0, start_time), bw, end_time - start_time, facecolor=color, edgecolor="#0F172A", linewidth=0.9, alpha=alpha))
+        ax.add_patch(Rectangle((center - bw / 2.0, start_time), bw, end_time - start_time, facecolor=color, edgecolor="#0F172A", linewidth=st.session_state.get("bar_outline_width_v48", 1.1), alpha=alpha))
         freq_label = frequency_display_value(center)
         if freq_label not in hidden_labels and len(plot_df) <= 180:
             rotation = choose_label_rotation(label_mode, bw, draw_idx, freq_gap)
@@ -918,7 +913,7 @@ def power_chart(df, color_by="Equipment", dark=True, sheet_name=None, draw_order
         group_label = label_value(row.get(color_by, "(blank)")) if color_by else "(blank)"
         color = color_map.get(group_label, stable_color(group_label))
         alpha = row_alpha(row, power_col, max_power, high_power_alpha, low_power_alpha)
-        ax.add_patch(Rectangle((center - bw / 2.0, 0), bw, power, facecolor=color, edgecolor="#0F172A", linewidth=0.9, alpha=alpha))
+        ax.add_patch(Rectangle((center - bw / 2.0, 0), bw, power, facecolor=color, edgecolor="#0F172A", linewidth=st.session_state.get("bar_outline_width_v48", 1.1), alpha=alpha))
         freq_label = frequency_display_value(center)
         if freq_label not in hidden_labels and len(plot_df) <= 180:
             rotation = choose_label_rotation(label_mode, bw, draw_idx, freq_gap)
@@ -1782,12 +1777,12 @@ def los_selection_controls(map_df, match_by):
 # ============================================================
 
 ACTIVE_EXTRACT_DEFAULT_COLUMNS = [
-    "Start Time",
-    "End Time",
     "Unit",
     "Sponsor",
     "Equipment",
     "Tech",
+    "Start Time",
+    "End Time",
     "Start Frequency (MHz)",
     "Center Frequency (MHz)",
     "End Frequency (MHz)",
@@ -1874,11 +1869,187 @@ def active_frequency_text_summary(df, max_rows=200):
     return "\n".join(lines)
 
 
+
+# ============================================================
+# V48 Better Graph Colors
+# ============================================================
+
+DECIMAL_FREQUENCY_COLUMNS = [
+    "Start Frequency (MHz)",
+    "Center Frequency (MHz)",
+    "End Frequency (MHz)",
+    "Bandwidth (MHz)",
+    "Power (W)",
+    "Power (dBm)",
+    "Latitude",
+    "Longitude",
+    "Coverage Radius",
+    "Antenna Height",
+]
+
+def decimal_editor_config(df):
+    """Make Streamlit data_editor accept decimal frequency values."""
+    cfg = {}
+
+    for col in df.columns:
+        if col in ["Start Frequency (MHz)", "Center Frequency (MHz)", "End Frequency (MHz)"]:
+            cfg[col] = st.column_config.NumberColumn(
+                col,
+                min_value=None,
+                max_value=None,
+                step=0.0001,
+                format="%.4f",
+                help="Decimal MHz allowed. Example: 2050.1250 or 396.9375",
+            )
+        elif col == "Bandwidth (MHz)":
+            cfg[col] = st.column_config.NumberColumn(
+                col,
+                min_value=0.0001,
+                max_value=None,
+                step=0.0001,
+                format="%.4f",
+                help="Decimal MHz allowed. Example: 0.0250, 1.2000, 8.8000",
+            )
+        elif col in ["Power (W)", "Power (dBm)", "Latitude", "Longitude", "Coverage Radius", "Antenna Height"]:
+            cfg[col] = st.column_config.NumberColumn(
+                col,
+                min_value=None,
+                max_value=None,
+                step=0.0001,
+                format="%.4f",
+            )
+        elif col in ["Active", "Locked"]:
+            cfg[col] = st.column_config.CheckboxColumn(col)
+        elif col in ["Start Time", "End Time"]:
+            cfg[col] = st.column_config.TextColumn(
+                col,
+                help="Use HH:MM or decimal hour. Example: 06:00 or 6.5",
+            )
+
+    return cfg
+
+
+def enforce_decimal_numeric_columns(df):
+    """Keep frequency and numeric planning columns as floats after editing."""
+    out = df.copy()
+    for col in DECIMAL_FREQUENCY_COLUMNS:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    return out
+
+
+
+# ============================================================
+# V48 Better Graph Color Controls
+# ============================================================
+
+COLORBLIND_DISTINCT_PALETTE = [
+    "#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9",
+    "#F0E442", "#000000", "#7E57C2", "#00838F", "#C62828", "#558B2F",
+    "#6D4C41", "#AD1457", "#1565C0", "#EF6C00", "#2E7D32", "#5D4037",
+    "#4527A0", "#0277BD", "#9E9D24", "#B71C1C", "#00695C", "#8E24AA",
+]
+
+HIGH_CONTRAST_PALETTE = [
+    "#00429D", "#E66100", "#1A9850", "#D01C8B", "#FFD92F", "#5E3C99",
+    "#A6761D", "#1B9E77", "#E7298A", "#66A61E", "#E6AB02", "#A6CEE3",
+    "#B2DF8A", "#FB9A99", "#FDBF6F", "#CAB2D6", "#FFFF99", "#B15928",
+]
+
+TACTICAL_PALETTE = [
+    "#00B4D8", "#F77F00", "#70E000", "#D00000", "#9D4EDD", "#FFD60A",
+    "#2EC4B6", "#FF006E", "#8338EC", "#3A86FF", "#8AC926", "#FFCA3A",
+    "#1982C4", "#6A4C93", "#BC6C25", "#588157", "#E63946", "#457B9D",
+]
+
+
+def get_palette_by_name(name):
+    if name == "High Contrast":
+        return HIGH_CONTRAST_PALETTE
+    if name == "Tactical":
+        return TACTICAL_PALETTE
+    return COLORBLIND_DISTINCT_PALETTE
+
+
+def color_distance(hex_a, hex_b):
+    def rgb(h):
+        h = str(h).replace("#", "")
+        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+    try:
+        a = rgb(hex_a)
+        b = rgb(hex_b)
+        return sum((a[i] - b[i]) ** 2 for i in range(3)) ** 0.5
+    except Exception:
+        return 999
+
+
+def build_distinct_color_map(labels, palette_name="Colorblind Distinct", min_distance=95):
+    palette = get_palette_by_name(palette_name)
+    clean_labels = []
+    for label in labels:
+        txt = label_value(label)
+        if txt not in clean_labels:
+            clean_labels.append(txt)
+
+    color_map = {}
+    used = []
+    for idx, label in enumerate(clean_labels):
+        candidates = palette[idx % len(palette):] + palette[:idx % len(palette)]
+        chosen = candidates[0]
+        for candidate in candidates:
+            recent = used[-4:] if len(used) >= 4 else used
+            if all(color_distance(candidate, old) >= min_distance for old in recent):
+                chosen = candidate
+                break
+        color_map[label] = chosen
+        used.append(chosen)
+    return color_map
+
+
+def build_color_map_v48(df, color_by, palette_name="Colorblind Distinct"):
+    if df is None or df.empty or color_by is None or color_by not in df.columns:
+        return {}
+    labels = [label_value(v) for v in df[color_by].fillna("(blank)").astype(str).tolist()]
+    min_distance = st.session_state.get("color_min_distance_v48", 95)
+    return build_distinct_color_map(labels, palette_name=palette_name, min_distance=min_distance)
+
+
+def add_color_palette_sidebar_controls():
+    st.divider()
+    st.header("Graph Colors")
+    palette_name = st.selectbox(
+        "Graph color palette",
+        ["Colorblind Distinct", "High Contrast", "Tactical"],
+        index=0,
+        help="Use Colorblind Distinct when unit colors look too similar.",
+    )
+    min_distance = st.slider(
+        "Color separation strength",
+        min_value=50,
+        max_value=160,
+        value=95,
+        step=5,
+        help="Higher values force stronger color separation between nearby legend items.",
+    )
+    outline_width = st.slider(
+        "Bar outline width",
+        min_value=0.2,
+        max_value=2.5,
+        value=1.1,
+        step=0.1,
+        help="Thicker outlines make adjacent frequency boxes easier to see.",
+    )
+    st.session_state["palette_name_v48"] = palette_name
+    st.session_state["color_min_distance_v48"] = min_distance
+    st.session_state["bar_outline_width_v48"] = outline_width
+    return palette_name, min_distance, outline_width
+
+
 # ============================================================
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V46")
+st.title("Spectrum Planner — V34 Tactical Ops Map")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
@@ -1950,11 +2121,11 @@ with st.sidebar:
     day_end = st.number_input("Operating day end hour", value=20.0, min_value=0.0, max_value=24.0, step=0.25)
     time_step = st.number_input("Time step minutes", value=30, min_value=1, max_value=240, step=5)
     st.subheader("Frequency settings")
-    low = st.number_input("Search low MHz", value=2200.0, step=1.0)
-    high = st.number_input("Search high MHz", value=2300.0, step=1.0)
+    low = st.number_input("Search low MHz", value=2200.0, step=0.0001)
+    high = st.number_input("Search high MHz", value=2300.0, step=0.0001)
     freq_step = st.number_input("Frequency step MHz", value=1.0, min_value=0.001, step=0.5)
     guard = st.number_input("Guard MHz", value=0.0, min_value=0.0, step=0.1, key="guard_mhz")
-    max_passes = st.number_input("Max passes", value=5, min_value=1, max_value=20, step=1)
+    max_passes = st.number_input("Max passes", value=5, min_value=1, max_value=20, step=0.0001)
 
 if "sheets" not in st.session_state:
     st.session_state["sheets"] = {}
@@ -1984,8 +2155,16 @@ current_df = recalc_start_end_fast(st.session_state["sheets"][active_sheet].copy
 st.subheader("Shared allocation workbook")
 st.caption("Use Active to turn rows on/off. Use Locked to prevent Smart Planner from moving that row.")
 editor_key = f"editor_{active_sheet}_{st.session_state.get('planner_applied_at', 'base')}_{st.session_state.get('visual_version', 0)}"
-edited_df = st.data_editor(current_df, use_container_width=True, hide_index=True, num_rows="dynamic", key=editor_key)
-edited_df = normalize_columns(edited_df, add_missing=True)
+edited_df = st.data_editor(
+    current_df,
+    use_container_width=True,
+    hide_index=True,
+    num_rows="dynamic",
+    column_config=decimal_editor_config(current_df),
+    key=f"editor_{active_sheet}_{st.session_state.get('planner_applied_at', 'base')}",
+)
+edited_df = enforce_decimal_numeric_columns(edited_df)
+edited_df = normalize_columns(enforce_decimal_numeric_columns(edited_df), add_missing=True)
 
 c1, c2, c3 = st.columns(3)
 with c1:
@@ -2471,4 +2650,4 @@ with st.expander("Extract / Export Visuals", expanded=True):
         for name, b64 in st.session_state["saved_png_exports"].items():
             st.download_button(f"Download saved {name}", data=base64.b64decode(b64.encode("utf-8")), file_name=name, mime="image/png", use_container_width=True)
 
-st.caption("V46 note: Tactical Offline Ops Map is the default for restricted networks and does not require map tiles.")
+st.caption("V34 note: Tactical Offline Ops Map is the default for restricted networks and does not require map tiles.")
