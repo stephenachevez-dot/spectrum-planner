@@ -32,10 +32,10 @@ try:
 except Exception:
     create_client = None
 
-st.set_page_config(page_title="Spectrum Planner V33 Better Map Views", layout="wide")
+st.set_page_config(page_title="Spectrum Planner V49", layout="wide")
 
 # ============================================================
-# Spectrum Planner V34 — Tactical Ops Map + Offline Radius Map
+# Spectrum Planner V49 — Tactical Ops Map + Offline Radius Map
 # ============================================================
 # Adds:
 # - Offline Radius Map default: no internet tiles / no Mapbox required.
@@ -1871,7 +1871,7 @@ def active_frequency_text_summary(df, max_rows=200):
 
 
 # ============================================================
-# V48 Better Graph Colors
+# V49 Number Input Type Fix
 # ============================================================
 
 DECIMAL_FREQUENCY_COLUMNS = [
@@ -2049,7 +2049,7 @@ def add_color_palette_sidebar_controls():
 # App UI
 # ============================================================
 
-st.title("Spectrum Planner — V34 Tactical Ops Map")
+st.title("Spectrum Planner — V49")
 st.caption("Use Offline Radius Map on restricted networks; it does not require map tiles or Mapbox.")
 
 with st.sidebar:
@@ -2125,7 +2125,7 @@ with st.sidebar:
     high = st.number_input("Search high MHz", value=2300.0, step=0.0001)
     freq_step = st.number_input("Frequency step MHz", value=1.0, min_value=0.001, step=0.5)
     guard = st.number_input("Guard MHz", value=0.0, min_value=0.0, step=0.1, key="guard_mhz")
-    max_passes = st.number_input("Max passes", value=5, min_value=1, max_value=20, step=0.0001)
+    max_passes = st.number_input("Max passes", value=5, min_value=1, max_value=20, step=1)
 
 if "sheets" not in st.session_state:
     st.session_state["sheets"] = {}
